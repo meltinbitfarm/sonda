@@ -369,6 +369,16 @@ import Testing
         #expect(await e.queuedEvents.isEmpty)
     }
 
+    @Test(arguments: ["86400", "Wed, 01 Jan 2031 00:00:00 GMT"])
+    func retryAfterIsCappedAtOneHour(header: String) async {
+        let h = Harness()
+        h.server.respond { _ in MockServer.Response(status: 429, headers: ["Retry-After": header]) }
+        let e = await h.engine()
+        await e.flush()
+        #expect(await e.nextAttemptAt == h.clock.now.addingTimeInterval(3600))
+        #expect(await e.queuedEvents.count == 2)
+    }
+
     @Test func retryAfterParsing() {
         let now = Date(timeIntervalSince1970: 1_793_880_000) // Sun, 04 Nov 2026 ...
         #expect(Transport.retryAfter(headers: ["Retry-After": "20"], now: now) == 20)

@@ -27,6 +27,9 @@ struct Dependencies: Sendable {
     var maxEventAge: TimeInterval = 30 * 24 * 60 * 60
     var backoffBase: TimeInterval = 5
     var backoffCap: TimeInterval = 10 * 60
+    /// Upper bound for a server's Retry-After: a proxy answering 429 with a day would
+    /// otherwise stop sending while the queue cap drops events.
+    var maxRetryAfter: TimeInterval = 60 * 60
 
     static func live(ingestKey: String, endpoint: URL) -> Dependencies {
         let config = URLSessionConfiguration.ephemeral
@@ -301,7 +304,7 @@ actor Engine {
                 }
             case let .rateLimited(retryAfter):
                 if let retryAfter {
-                    postpone(by: retryAfter)
+                    postpone(by: min(retryAfter, deps.maxRetryAfter))
                 } else {
                     failures += 1
                     postpone(by: backoffDelay())
