@@ -11,6 +11,7 @@ CREATE TABLE apps (
 CREATE TABLE events (
     id           INTEGER PRIMARY KEY,
     app_id       INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+    event_id     TEXT    NOT NULL, -- client-generated UUID, lowercase; dedups retried deliveries
     name         TEXT    NOT NULL,
     ts           INTEGER NOT NULL, -- device time, ms
     received_at  INTEGER NOT NULL, -- server time, ms
@@ -27,6 +28,7 @@ CREATE TABLE events (
     props        TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(props))
 ) STRICT;
 
+CREATE UNIQUE INDEX events_app_event_id ON events (app_id, event_id);
 CREATE INDEX events_app_name_ts    ON events (app_id, name, ts);
 CREATE INDEX events_app_user_ts    ON events (app_id, user_id, ts);
 CREATE INDEX events_app_session_ts ON events (app_id, session_id, ts);

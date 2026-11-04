@@ -106,12 +106,15 @@ func TestEventsConstraints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ins := "INSERT INTO events (app_id, name, ts, received_at, user_id, session_id, props) VALUES (?, 'x', 1, 2, 'u', 's', ?)"
+	ins := "INSERT INTO events (app_id, event_id, name, ts, received_at, user_id, session_id, props) VALUES (?, lower(hex(randomblob(16))), 'x', 1, 2, 'u', 's', ?)"
 	if _, err := s.DB.ExecContext(ctx, ins, app.ID, `{"k":"v"}`); err != nil {
 		t.Fatalf("valid event: %v", err)
 	}
 	if _, err := s.DB.ExecContext(ctx, ins, app.ID, `not json`); err == nil {
 		t.Error("invalid props JSON accepted")
+	}
+	if _, err := s.DB.ExecContext(ctx, "INSERT INTO events (app_id, name, ts, received_at, user_id, session_id) VALUES (?, 'x', 1, 2, 'u', 's')", app.ID); err == nil {
+		t.Error("event without event_id accepted")
 	}
 	if _, err := s.DB.ExecContext(ctx, ins, app.ID+100, `{}`); err == nil {
 		t.Error("event for unknown app accepted (foreign keys off?)")
