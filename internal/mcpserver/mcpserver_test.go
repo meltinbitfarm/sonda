@@ -114,6 +114,12 @@ func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // setup seeds a database and serves the MCP handler on a real socket.
 func setup(t *testing.T) (*httptest.Server, *lockedBuf) {
 	t.Helper()
+	return setupWith(t, Options{})
+}
+
+// setupWith is setup with extra options (Token and Logger are set here).
+func setupWith(t *testing.T, opts Options) (*httptest.Server, *lockedBuf) {
+	t.Helper()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "s.db")
 	st, err := store.Open(ctx, path)
@@ -147,7 +153,8 @@ func setup(t *testing.T) (*httptest.Server, *lockedBuf) {
 	}
 	t.Cleanup(func() { ro.Close() })
 	logs := &lockedBuf{}
-	h, err := New(ro.DB, Options{Token: token, Logger: slog.New(slog.NewTextHandler(logs, nil))})
+	opts.Token, opts.Logger = token, slog.New(slog.NewTextHandler(logs, nil))
+	h, err := New(ro.DB, opts)
 	if err != nil {
 		t.Fatal(err)
 	}

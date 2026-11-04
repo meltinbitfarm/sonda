@@ -12,6 +12,7 @@ package mcpserver
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -34,6 +35,50 @@ type Options struct {
 	Logger       *slog.Logger
 	Now          func() time.Time // clock, for tests
 	QueryTimeout time.Duration    // query tool; 0 means analytics.DefaultQueryTimeout
+	ToolTimeout  time.Duration    // every tool; 0 means DefaultToolTimeout
+}
+
+// DefaultToolTimeout bounds every tool call (O6 S2). It is below the HTTP
+// server's 30 s WriteTimeout, so the error still reaches the client; the
+// context is what stops SQLite (WriteTimeout only closes the socket).
+const DefaultToolTimeout = 25 * time.Second
+
+// MaxConcurrentTools is how many tool calls run at once; more wait (within
+// their timeout). It is below the read-only pool size (4), so long reads
+// cannot take every connection, and few long read transactions at a time
+// leave room for WAL checkpoints (Litestream).
+const MaxConcurrentTools = 3
+
+// guard applies the per-call timeout and the concurrency limit.
+type guard struct {
+	timeout time.Duration
+	slots   chan struct{}
+}
+
+func newGuard(timeout time.Duration, n int) *guard {
+	if timeout <= 0 {
+		timeout = DefaultToolTimeout
+	}
+	return &guard{timeout: timeout, slots: make(chan struct{}, n)}
+}
+
+// run calls fn with a context that expires after the timeout, once a slot is
+// free. Waiting for a slot counts against the timeout.
+func run[Out any](ctx context.Context, g *guard, name string, fn func(context.Context) (Out, error)) (Out, error) {
+	var zero Out
+	ctx, cancel := context.WithTimeout(ctx, g.timeout)
+	defer cancel()
+	select {
+	case g.slots <- struct{}{}:
+	case <-ctx.Done():
+		return zero, fmt.Errorf("%s: server busy with other tool calls, retry shortly", name)
+	}
+	defer func() { <-g.slots }()
+	out, err := fn(ctx)
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return zero, fmt.Errorf("%s stopped after %s; narrow the time range or add filters", name, g.timeout)
+	}
+	return out, err
 }
 
 // New returns the authenticated MCP handler. db must be the read-only store
@@ -51,7 +96,7 @@ func New(db *sql.DB, opts Options) (http.Handler, error) {
 	svc := &analytics.Service{DB: db, Now: opts.Now, QueryTimeout: opts.QueryTimeout}
 	srv := mcp.NewServer(&mcp.Implementation{Name: "sonda", Title: "Sonda analytics", Version: Version},
 		&mcp.ServerOptions{Instructions: instructions, Logger: sdkLog})
-	register(srv, svc, log)
+	register(srv, svc, log, newGuard(opts.ToolTimeout, MaxConcurrentTools))
 
 	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv },
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, Logger: sdkLog})
@@ -79,13 +124,13 @@ func (m minLevel) WithGroup(name string) slog.Handler {
 	return minLevel{m.level, m.Handler.WithGroup(name)}
 }
 
-// addTool registers a read-only tool and logs one line per call: tool
-// name, duration and outcome, never the arguments.
-func addTool[In, Out any](srv *mcp.Server, log *slog.Logger, t *mcp.Tool, fn func(context.Context, In) (Out, error)) {
+// addTool registers a read-only tool, run under g (timeout, concurrency), and
+// logs one line per call: tool name, duration and outcome, never the arguments.
+func addTool[In, Out any](srv *mcp.Server, log *slog.Logger, g *guard, t *mcp.Tool, fn func(context.Context, In) (Out, error)) {
 	t.Annotations = &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: new(false)}
 	mcp.AddTool(srv, t, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
 		start := time.Now()
-		out, err := fn(ctx, in)
+		out, err := run(ctx, g, t.Name, func(ctx context.Context) (Out, error) { return fn(ctx, in) })
 		ms := time.Since(start).Milliseconds()
 		if err != nil {
 			log.Info("mcp tool", "tool", t.Name, "ms", ms, "ok", false, "err", err.Error())
@@ -97,14 +142,14 @@ func addTool[In, Out any](srv *mcp.Server, log *slog.Logger, t *mcp.Tool, fn fun
 	})
 }
 
-func register(srv *mcp.Server, svc *analytics.Service, log *slog.Logger) {
-	addTool(srv, log, &mcp.Tool{Name: "list_apps", Title: "List apps", Description: descListApps},
+func register(srv *mcp.Server, svc *analytics.Service, log *slog.Logger, g *guard) {
+	addTool(srv, log, g, &mcp.Tool{Name: "list_apps", Title: "List apps", Description: descListApps},
 		func(ctx context.Context, _ struct{}) (analytics.AppsResult, error) { return svc.ListApps(ctx) })
-	addTool(srv, log, &mcp.Tool{Name: "event_counts", Title: "Event counts", Description: descEventCounts}, svc.EventCounts)
-	addTool(srv, log, &mcp.Tool{Name: "funnel", Title: "Funnel", Description: descFunnel}, svc.Funnel)
-	addTool(srv, log, &mcp.Tool{Name: "retention", Title: "Retention", Description: descRetention}, svc.Retention)
-	addTool(srv, log, &mcp.Tool{Name: "recent_events", Title: "Recent events", Description: descRecent}, svc.RecentEvents)
-	addTool(srv, log, &mcp.Tool{Name: "query", Title: "Read-only SQL", Description: descQuery}, svc.Query)
+	addTool(srv, log, g, &mcp.Tool{Name: "event_counts", Title: "Event counts", Description: descEventCounts}, svc.EventCounts)
+	addTool(srv, log, g, &mcp.Tool{Name: "funnel", Title: "Funnel", Description: descFunnel}, svc.Funnel)
+	addTool(srv, log, g, &mcp.Tool{Name: "retention", Title: "Retention", Description: descRetention}, svc.Retention)
+	addTool(srv, log, g, &mcp.Tool{Name: "recent_events", Title: "Recent events", Description: descRecent}, svc.RecentEvents)
+	addTool(srv, log, g, &mcp.Tool{Name: "query", Title: "Read-only SQL", Description: descQuery}, svc.Query)
 }
 
 const instructions = `Sonda holds product analytics events sent by Fabio's iOS/macOS apps (one database, several apps).
