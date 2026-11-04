@@ -37,6 +37,14 @@ func TestOpenReadOnly(t *testing.T) {
 		SELECT sum(x) + length(json_extract('{"a":"bc"}', '$.a')) FROM c`).Scan(&n); err != nil || n != 17 {
 		t.Fatalf("recursive cte = %d, %v", n, err)
 	}
+	// The ingest key hash is hidden from the read-only side.
+	var hash *string
+	if err := ro.DB.QueryRowContext(ctx, "SELECT ingest_key_hash FROM apps").Scan(&hash); err != nil || hash != nil {
+		t.Fatalf("ingest_key_hash = %v, %v", hash, err)
+	}
+	if err := ro.DB.QueryRowContext(ctx, "SELECT count(*) FROM apps WHERE ingest_key_hash = 'h1'").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("filter on ingest_key_hash matched %d, %v", n, err)
+	}
 	// Schema introspection pragmas are allowed as table-valued functions.
 	if err := ro.DB.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('events')").Scan(&n); err != nil || n < 10 {
 		t.Fatalf("pragma_table_info = %d, %v", n, err)

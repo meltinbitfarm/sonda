@@ -21,6 +21,7 @@ import (
 //     (minus a short deny list), recursive CTEs and a few schema
 //     introspection pragmas (so pragma_table_info('events') works). ATTACH,
 //     other pragmas, transactions, DDL and DML are refused at prepare time.
+//     apps.ingest_key_hash reads as NULL: the MCP side never needs it.
 //
 // It does not create or migrate the database: open it with Open first.
 func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
@@ -79,7 +80,12 @@ var introspectionPragmas = map[string]bool{
 
 func readOnlyAuthorizer(action sqlite.AuthorizerActionCode, arg1, arg2, _, _ string) sqlite.AuthorizerReturnCode {
 	switch action {
-	case sqlite.AuthSelect, sqlite.AuthRead, sqlite.AuthRecursive:
+	case sqlite.AuthRead:
+		if strings.EqualFold(arg1, "apps") && strings.EqualFold(arg2, "ingest_key_hash") {
+			return sqlite.AuthorizerIgnore // the column reads as NULL
+		}
+		return sqlite.AuthorizerOK
+	case sqlite.AuthSelect, sqlite.AuthRecursive:
 		return sqlite.AuthorizerOK
 	case sqlite.AuthPragma:
 		if introspectionPragmas[strings.ToLower(arg1)] {
