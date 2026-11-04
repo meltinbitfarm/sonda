@@ -96,7 +96,9 @@ actor Engine {
     private(set) var failures = 0
     /// No send before this time (backoff or Retry-After).
     private(set) var nextAttemptAt: Date?
-    private var isFlushing = false
+    /// The send in progress. A second caller awaits it instead of returning at once, so a
+    /// background task ends only when the request in flight has finished.
+    private var runningFlush: Task<Void, Never>?
     private var timerTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
 
@@ -250,12 +252,25 @@ actor Engine {
     }
 
     /// Sends queued events in batches until the queue is empty or an attempt fails.
+    /// If a send is already running, waits for it to finish instead of starting another one.
     func flush() async {
-        guard sendsEvents, !unauthorized, !isFlushing else { return }
+        if let running = runningFlush {
+            await running.value
+            return
+        }
+        guard sendsEvents, !unauthorized else { return }
         if let next = nextAttemptAt, deps.now() < next { return }
-        isFlushing = true
-        defer { isFlushing = false }
+        // Created on the actor and stored before it can run: the task body starts only after
+        // this method suspends, so `runningFlush` is always set while the send is in progress.
+        let task = Task {
+            defer { self.runningFlush = nil }
+            await self.sendQueue()
+        }
+        runningFlush = task
+        await task.value
+    }
 
+    private func sendQueue() async {
         for _ in 0..<1000 {
             let now = deps.now()
             store.removeOlder(than: cutoff(now: now))

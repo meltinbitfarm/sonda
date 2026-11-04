@@ -217,6 +217,68 @@ import Testing
         #expect(await e.queuedEvents.isEmpty)
     }
 
+    // MARK: Concurrent flushes
+
+    /// A server that holds the first request until the test opens the gate.
+    private static func gatedHarness() -> (Harness, DispatchSemaphore) {
+        let h = Harness()
+        let gate = DispatchSemaphore(value: 0)
+        h.server.respond { r in
+            gate.wait()
+            return .ok(accepted: r.events.count)
+        }
+        return (h, gate)
+    }
+
+    private static func waitForRequest(_ h: Harness) async throws {
+        for _ in 0..<500 where h.server.requests.isEmpty {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try #require(!h.server.requests.isEmpty)
+    }
+
+    @Test func secondFlushWaitsForTheRunningOne() async throws {
+        let (h, gate) = Self.gatedHarness()
+        let e = await h.engine()
+        let first = Task { await e.flush() }
+        try await Self.waitForRequest(h)
+
+        let second = Task { () -> Int in
+            await e.flush()
+            return await e.queuedEvents.count
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        gate.signal()
+        #expect(await second.value == 0) // returned only after the batch was delivered
+        await first.value
+        #expect(h.server.requests.count == 1)
+    }
+
+    @Test func backgroundEndsOnlyAfterTheRunningSend() async throws {
+        let (h, gate) = Self.gatedHarness()
+        let e = await h.engine()
+        let periodic = Task { await e.flush() }
+        try await Self.waitForRequest(h)
+
+        let doneCalled = Locked(false)
+        let remaining = Task { () -> Int in
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                Task {
+                    await e.handle(.background(at: h.clock.now, done: {
+                        doneCalled.withLock { $0 = true }
+                        cont.resume()
+                    }))
+                }
+            }
+            return await e.queuedEvents.count
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(doneCalled.withLock { $0 } == false) // the request is still in flight
+        gate.signal()
+        #expect(await remaining.value == 0)
+        await periodic.value
+    }
+
     // MARK: Retry
 
     @Test func serverErrorRetriesWithExponentialBackoff() async {
