@@ -119,7 +119,7 @@ import Testing
         #expect(await e.queuedEvents.isEmpty)
     }
 
-    @Test(arguments: [400, 404, 415, 422])
+    @Test(arguments: [400, 415])
     func permanentClientErrorDropsBatch(status: Int) async {
         let h = Harness()
         h.server.respond { _ in MockServer.Response(status: status, body: Data(#"{"error":"x"}"#.utf8)) }
@@ -128,6 +128,55 @@ import Testing
         #expect(h.server.requests.count == 1)
         #expect(await e.queuedEvents.isEmpty)
         #expect(await e.nextAttemptAt == nil)
+    }
+
+    /// 404/405 come from a proxy with no route (redeploy, wrong path, http->https redirect
+    /// turning the POST into a GET): the data must survive until the endpoint works again.
+    @Test(arguments: [402, 404, 405, 408, 409, 410, 421, 422, 425])
+    func otherClientErrorsKeepBatchAndRetry(status: Int) async {
+        let h = Harness()
+        h.server.respond { _ in MockServer.Response(status: status, body: Data("404 page not found".utf8)) }
+        let e = await h.engine()
+        await e.flush()
+        #expect(h.server.requests.count == 1)
+        #expect(await e.queuedEvents.count == 2)
+        #expect(await e.failures == 1)
+        #expect(await e.nextAttemptAt != nil)
+
+        h.server.respond { .ok(accepted: $0.events.count) }
+        h.clock.advance(3600)
+        await e.flush()
+        #expect(await e.queuedEvents.isEmpty)
+    }
+
+    /// A captive portal, a proxy or a default page answering 200 must not erase the queue.
+    @Test(arguments: [
+        "<html><body>Sign in to the Wi-Fi</body></html>",
+        "",
+        "{}",
+        #"{"error":"x"}"#,
+        #"{"accepted":"3"}"#,
+    ])
+    func okWithoutIngestResponseIsRetried(body: String) async {
+        let h = Harness()
+        h.server.respond { _ in
+            MockServer.Response(status: 200, headers: ["Content-Type": "text/html"], body: Data(body.utf8))
+        }
+        let e = await h.engine()
+        await e.flush()
+        #expect(h.server.requests.count == 1)
+        #expect(await e.queuedEvents.count == 2)
+        #expect(await e.failures == 1)
+        #expect(await e.nextAttemptAt != nil)
+    }
+
+    @Test func okOutcomeNeedsAcceptedCount() {
+        let now = Date()
+        #expect(Transport.outcome(status: 200, headers: [:], body: Data(#"{"accepted":0}"#.utf8), now: now)
+                == .delivered(accepted: 0, duplicates: 0, rejected: 0))
+        #expect(Transport.outcome(status: 200, headers: [:], body: Data(#"{"duplicates":2}"#.utf8), now: now)
+                == .retry)
+        #expect(Transport.outcome(status: 200, headers: [:], body: Data("OK".utf8), now: now) == .retry)
     }
 
     @Test func unauthorizedKeepsQueueAndStopsUntilNextLaunch() async {
