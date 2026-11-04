@@ -155,6 +155,48 @@ func TestCreateAppAndLookup(t *testing.T) {
 	}
 }
 
+func TestRotateKey(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+	oldKey, oldHash := ingestkey.Generate()
+	app, err := s.CreateApp(ctx, "Pulso", oldHash, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, otherHash := ingestkey.Generate()
+	if _, err := s.CreateApp(ctx, "Celora", otherHash, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	newKey, newHash := ingestkey.Generate()
+	got, err := s.RotateKey(ctx, "Pulso", newHash)
+	if err != nil || got.ID != app.ID || got.Name != "Pulso" || !got.CreatedAt.Equal(app.CreatedAt) {
+		t.Fatalf("rotate = %+v, %v; want %+v", got, err, app)
+	}
+	if _, err := s.AppByKeyHash(ctx, ingestkey.Hash(oldKey)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old key still valid: %v", err)
+	}
+	if a, err := s.AppByKeyHash(ctx, ingestkey.Hash(newKey)); err != nil || a.ID != app.ID {
+		t.Fatalf("new key: %+v, %v", a, err)
+	}
+	// The other app is untouched.
+	if a, err := s.AppByKeyHash(ctx, otherHash); err != nil || a.Name != "Celora" {
+		t.Fatalf("other app: %+v, %v", a, err)
+	}
+
+	// Exact name only; unknown app is ErrNotFound and changes nothing.
+	_, h := ingestkey.Generate()
+	for _, name := range []string{"pulso", "Nope", ""} {
+		if _, err := s.RotateKey(ctx, name, h); !errors.Is(err, ErrNotFound) {
+			t.Errorf("rotate %q: err = %v", name, err)
+		}
+	}
+	// A hash already used by another app is refused (cannot happen with random keys).
+	if _, err := s.RotateKey(ctx, "Pulso", otherHash); !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("reused hash: err = %v", err)
+	}
+}
+
 func TestInsertEvents(t *testing.T) {
 	ctx := context.Background()
 	s, _ := openTemp(t)

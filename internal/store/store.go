@@ -181,6 +181,29 @@ func (s *Store) AppByKeyHash(ctx context.Context, keyHash string) (App, error) {
 	return a, nil
 }
 
+// RotateKey replaces the ingest key hash of the app named name (exact match).
+// The old key stops working at once: ingestion looks the hash up on every
+// request and nothing caches it. ErrNotFound if no app has that name.
+func (s *Store) RotateKey(ctx context.Context, name, keyHash string) (App, error) {
+	var a App
+	var created int64
+	err := s.DB.QueryRowContext(ctx,
+		"UPDATE apps SET ingest_key_hash = ? WHERE name = ? RETURNING id, name, created_at",
+		keyHash, name).Scan(&a.ID, &a.Name, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return App{}, ErrNotFound
+	}
+	if err != nil {
+		var se *sqlite.Error
+		if errors.As(err, &se) && se.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE {
+			return App{}, ErrDuplicate
+		}
+		return App{}, err
+	}
+	a.CreatedAt = time.UnixMilli(created).UTC()
+	return a, nil
+}
+
 // ListApps returns all apps ordered by name.
 func (s *Store) ListApps(ctx context.Context) ([]App, error) {
 	rows, err := s.DB.QueryContext(ctx, "SELECT id, name, created_at FROM apps ORDER BY name")

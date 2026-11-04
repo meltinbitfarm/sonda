@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/meltinbitfarm/sonda/internal/ingestkey"
+	"github.com/meltinbitfarm/sonda/internal/server"
 	"github.com/meltinbitfarm/sonda/internal/store"
 )
 
@@ -64,6 +67,85 @@ func TestAppCreateAndList(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "Pulso") || strings.Contains(out, key) {
 		t.Fatalf("list: code %d, out %q", code, out)
 	}
+}
+
+// O7: rotate-key prints a new key; a server already running on the same
+// database refuses the old key on the next request and accepts the new one.
+func TestAppRotateKey(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "sonda.db")
+	env := map[string]string{"SONDA_DB_PATH": db}
+	_, out, _ := run(t, env, "app", "create", "Demo")
+	oldKey := strings.TrimSpace(out)
+
+	st, err := store.Open(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := httptest.NewServer(server.New(st, server.Config{RatePerMinute: 1000}))
+	defer srv.Close()
+	post := func(key string) int {
+		body := fmt.Sprintf(`{"events":[{"event_id":"%s","name":"app.first_launch","ts":%d,"user_id":"0f8fad5b-d9cb-469f-a165-70867728950e","session_id":"7c9e6679-7425-40de-944b-e07fc1f90ae7"}]}`,
+			newUUID(t), time.Now().UnixMilli())
+		req, _ := http.NewRequest("POST", srv.URL+"/v1/events", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := post(oldKey); code != 200 {
+		t.Fatalf("old key before rotation: %d", code)
+	}
+
+	code, out, errOut := run(t, env, "app", "rotate-key", " Demo ")
+	if code != 0 {
+		t.Fatalf("rotate-key: code %d, stderr %q", code, errOut)
+	}
+	newKey := strings.TrimSpace(out)
+	if !strings.HasPrefix(newKey, ingestkey.Prefix) || strings.Count(out, "\n") != 1 || newKey == oldKey {
+		t.Fatalf("stdout should be just a new key, got %q", out)
+	}
+	if !strings.Contains(errOut, "old key no longer works") || strings.Contains(errOut, newKey) {
+		t.Fatalf("stderr %q", errOut)
+	}
+
+	if code := post(oldKey); code != 401 {
+		t.Fatalf("old key after rotation: %d, want 401", code)
+	}
+	if code := post(newKey); code != 200 {
+		t.Fatalf("new key: %d", code)
+	}
+	var events int
+	st.DB.QueryRow("SELECT count(*) FROM events").Scan(&events)
+	if events != 2 {
+		t.Fatalf("events = %d, want 2 (rotation keeps the app's data)", events)
+	}
+
+	if code, _, errOut := run(t, env, "app", "rotate-key", "demo"); code != 1 || !strings.Contains(errOut, "no app named") {
+		t.Fatalf("unknown app: code %d, stderr %q", code, errOut)
+	}
+	if code, _, _ := run(t, env, "app", "rotate-key", ""); code != 1 {
+		t.Fatalf("empty name: code %d", code)
+	}
+	if code, _, _ := run(t, env, "app", "rotate-key"); code != 2 {
+		t.Fatalf("missing name: code %d", code)
+	}
+}
+
+func newUUID(t *testing.T) string {
+	t.Helper()
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatal(err)
+	}
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 func TestUsage(t *testing.T) {

@@ -31,6 +31,9 @@ const (
 const usage = `usage:
   sonda serve                 start the HTTP server
   sonda app create "<name>"   create an app and print its ingest key
+  sonda app rotate-key "<name>"
+                              replace the app's ingest key and print the new one;
+                              the old key stops working immediately
   sonda app list              list apps
 
 environment:
@@ -65,6 +68,8 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		}
 	case len(args) == 3 && args[0] == "app" && args[1] == "create":
 		err = appCreate(ctx, dbPath, args[2], stdout, stderr)
+	case len(args) == 3 && args[0] == "app" && args[1] == "rotate-key":
+		err = appRotateKey(ctx, dbPath, args[2], stdout, stderr)
 	case len(args) == 2 && args[0] == "app" && args[1] == "list":
 		err = appList(ctx, dbPath, stdout)
 	case len(args) == 1 && (args[0] == "help" || args[0] == "-h" || args[0] == "--help"):
@@ -209,6 +214,30 @@ func appCreate(ctx context.Context, dbPath, name string, stdout, stderr io.Write
 	}
 	// The key goes alone to stdout so it can be captured; it cannot be shown again.
 	fmt.Fprintf(stderr, "created app %q (id %d). Ingest key below: copy it now, it is not stored and cannot be shown again.\n", app.Name, app.ID)
+	fmt.Fprintln(stdout, key)
+	return nil
+}
+
+func appRotateKey(ctx context.Context, dbPath, name string, stdout, stderr io.Writer) error {
+	name, err := validateAppName(name)
+	if err != nil {
+		return err
+	}
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer st.Close()
+
+	key, hash := ingestkey.Generate()
+	app, err := st.RotateKey(ctx, name, hash)
+	if errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("no app named %q (sonda app list shows the names)", name)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stderr, "rotated the ingest key of app %q (id %d): the old key no longer works. New key below: copy it now, it is not stored and cannot be shown again.\n", app.Name, app.ID)
 	fmt.Fprintln(stdout, key)
 	return nil
 }
