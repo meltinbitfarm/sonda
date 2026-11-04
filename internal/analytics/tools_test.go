@@ -401,6 +401,11 @@ func TestQuery(t *testing.T) {
 		t.Errorf("pragma_table_info: %+v, %v", res, err)
 	}
 
+	// Strings and blobs are capped (O6 M2).
+	if _, err := f.svc.Query(ctx, QueryInput{SQL: "SELECT length(hex(zeroblob(100000000)))"}); err == nil || !strings.Contains(err.Error(), "exceeds 16 MiB") {
+		t.Errorf("big blob: %v", err)
+	}
+
 	// Timeout interrupts a runaway query.
 	f.svc.QueryTimeout = 200 * time.Millisecond
 	start := time.Now()

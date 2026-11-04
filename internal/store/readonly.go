@@ -9,7 +9,34 @@ import (
 	"strings"
 
 	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
+
+// MaxValueLength caps any string or blob built by a statement on a
+// connection taken with LimitedConn (SQLITE_LIMIT_LENGTH; SQLite's default is
+// 1 GB). zeroblob, randomblob, printf, hex, replace, || and group_concat all
+// stop with "string or blob too big" past it, so one query tool call cannot
+// allocate hundreds of MB (O6 M2). Stored values are far smaller: a prop
+// value is at most 2 KB, a request body 256 KB.
+const MaxValueLength = 16 << 20
+
+// LimitedConn takes a connection from db (the read-only pool) and caps the
+// length of strings and blobs on it to MaxValueLength. Run untrusted SQL on
+// the returned connection and Close it afterwards to give it back to the
+// pool. The cap stays on the connection, which is harmless for the other
+// tools; it is set again on every call because the driver offers no hook to
+// set it when a connection is opened.
+func LimitedConn(ctx context.Context, db *sql.DB) (*sql.Conn, error) {
+	c, err := db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := sqlite.Limit(c, sqlite3.SQLITE_LIMIT_LENGTH, MaxValueLength); err != nil {
+		c.Close()
+		return nil, err
+	}
+	return c, nil
+}
 
 // OpenReadOnly opens a separate connection pool on an existing database for
 // the MCP tools (D14). Writes are blocked three times over:

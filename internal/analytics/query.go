@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/meltinbitfarm/sonda/internal/store"
 )
 
 const (
@@ -176,7 +178,13 @@ func (s *Service) Query(ctx context.Context, in QueryInput) (QueryResult, error)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	rows, err := s.DB.QueryContext(ctx, q)
+	// Untrusted SQL runs on a connection with capped string/blob length (O6 M2).
+	conn, err := store.LimitedConn(ctx, s.DB)
+	if err != nil {
+		return QueryResult{}, queryErr(ctx, timeout, err)
+	}
+	defer conn.Close()
+	rows, err := conn.QueryContext(ctx, q)
 	if err != nil {
 		return QueryResult{}, queryErr(ctx, timeout, err)
 	}
@@ -214,6 +222,9 @@ func (s *Service) Query(ctx context.Context, in QueryInput) (QueryResult, error)
 func queryErr(ctx context.Context, timeout time.Duration, err error) error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return fmt.Errorf("query interrupted after %s; add filters (app_id, ts range) or aggregate", timeout)
+	}
+	if strings.Contains(err.Error(), "string or blob too big") {
+		return fmt.Errorf("a value built by the query exceeds %d MiB: %w", store.MaxValueLength>>20, err)
 	}
 	return err
 }

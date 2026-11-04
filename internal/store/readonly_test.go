@@ -96,3 +96,42 @@ func TestOpenReadOnlyMissingFile(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// O6 M2: on a LimitedConn no statement can build a string or blob larger than
+// MaxValueLength, whichever function builds it.
+func TestLimitedConn(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "s.db")
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ro, err := OpenReadOnly(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+
+	c, err := LimitedConn(ctx, ro.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var n int64
+	if err := c.QueryRowContext(ctx, "SELECT length(zeroblob(1000000))").Scan(&n); err != nil || n != 1000000 {
+		t.Fatalf("small blob: %d, %v", n, err)
+	}
+	for _, q := range []string{
+		"SELECT length(zeroblob(100000000))",
+		"SELECT length(hex(zeroblob(9000000)))", // 18 MB string from a 9 MB blob
+		"SELECT length(randomblob(20000000))",
+		"SELECT length(printf('%.*c', 20000000, 'x'))",
+		"WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < 40) SELECT length(group_concat(hex(zeroblob(250000)))) FROM c",
+	} {
+		err := c.QueryRowContext(ctx, q).Scan(&n)
+		if err == nil || !strings.Contains(err.Error(), "too big") {
+			t.Errorf("%s: %d, %v; want string or blob too big", q, n, err)
+		}
+	}
+}
