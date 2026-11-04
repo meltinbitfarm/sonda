@@ -51,12 +51,33 @@ import Testing
         let h = Harness()
         h.maxQueuedEvents = 5
         let e = await h.engine()
+        // 2 automatic + 8: over the cap of 5 the queue is trimmed to 4 (90%), oldest first.
         for i in 0..<8 { await e.track("feature.used", ["n": .int(i)], at: h.clock.now) }
-        #expect(await e.queuedEvents.count == 5)
+        let queued = await e.queuedEvents
+        #expect(queued.count == 4)
         let reloaded = EventStore(fileURL: h.queueURL, maxEvents: 5)
-        #expect(reloaded.events == (await e.queuedEvents))
-        let last = String(decoding: reloaded.events.last!.json, as: UTF8.self)
-        #expect(last.contains(#""n":7"#))
+        #expect(reloaded.events == queued)
+        let ns = queued.map { String(decoding: $0.json, as: UTF8.self) }
+        #expect(zip(ns, 4...7).allSatisfy { json, n in json.contains(#""n":\#(n)"#) })
+    }
+
+    @Test func queueAtCapIsNotRewrittenOnEveryEvent() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("sonda-cap-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("queue.jsonl")
+        let store = EventStore(fileURL: url, maxEvents: 2000)
+        #expect(store.trimTarget == 1800)
+        for i in 0..<6000 {
+            let id = UUID().uuidString.lowercased()
+            let json = Data(#"{"event_id":"\#(id)","name":"feature.used","ts":\#(i),"user_id":"u","session_id":"s"}"#.utf8)
+            store.append(QueuedEvent(id: id, ts: Int64(i), json: json))
+        }
+        #expect(store.count <= 2000)
+        #expect(store.events.last?.ts == 5999)
+        // 4000 events over the cap, trimmed 200 at a time: about 20 rewrites (was 4000).
+        #expect(store.rewrites <= 25)
+        let reloaded = EventStore(fileURL: url, maxEvents: 2000)
+        #expect(reloaded.events == store.events)
     }
 
     @Test func eventsOlderThan30DaysAreDroppedNotSent() async throws {
