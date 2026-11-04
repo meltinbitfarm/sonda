@@ -1,1 +1,2 @@
 - 2026-11-04 · developer · go.mod, cmd/sonda, internal/{cli,store,server,ingestkey} · Go skeleton: `sonda serve` (GET /healthz, SONDA_ADDR/SONDA_DB_PATH), `sonda app create|list`, SQLite WAL schema apps/events with hashed ingest keys and ms timestamps.
+- 2026-11-04 · developer · internal/{server,ingest,ratelimit,store,cli}, notes/ingest-contract.md · New `POST /v1/events` (ingest key auth, D13 validation, per-key rate limit, gzip, env limits SONDA_INGEST_RATE_PER_MIN/MAX_BATCH/MAX_BODY_BYTES, IP-redacting logs); SDK contract in notes/ingest-contract.md.
