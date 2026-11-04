@@ -9,4 +9,4 @@ Servizio di telemetria self-hosted e leggerissimo che sostituisce TelemetryDeck 
 - V3: nessuna interfaccia web.
 
 ## Agent limits
-- L1: No sending, publishing, deploying, merging to main, purchases or emails: drafts and proposals only (default).
+- L1: No sending, publishing, deploying, purchases or emails: drafts and proposals only. The lead agent may merge to main when tests pass without conflicts (D20).
