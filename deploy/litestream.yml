@@ -1,0 +1,25 @@
+# Litestream (D4): continuous replication of /data/sonda.db to Cloudflare R2
+# (or any S3-compatible store; the local restore test uses MinIO).
+# Baked into the "litestream" image target. Litestream expands ${VAR} from the
+# environment, so no secret is in this file: docker-compose.yml passes them.
+
+logging:
+  level: info
+
+dbs:
+  - path: /data/sonda.db
+    replica:
+      type: s3
+      # R2: https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+      # (EU jurisdiction: https://<ACCOUNT_ID>.eu.r2.cloudflarestorage.com)
+      endpoint: ${LITESTREAM_ENDPOINT}
+      bucket: ${LITESTREAM_BUCKET}
+      # Key prefix inside the bucket.
+      path: ${LITESTREAM_PATH}
+      # R2 wants "auto".
+      region: ${LITESTREAM_REGION}
+      access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+      secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+      # R2 accepts both styles (Litestream detects R2 and sets its quirks:
+      # signed payload, concurrency 2); MinIO needs path style.
+      force-path-style: ${LITESTREAM_FORCE_PATH_STYLE}

@@ -1,0 +1,93 @@
+# Sonda on Coolify (D5, A1). Guide: docs/deploy.md.
+#
+#   restore     one-shot: if /data/sonda.db is missing and a replica exists in R2,
+#               restore it; otherwise exit 0. Runs before every start of app.
+#   app         sonda serve on :8080 (distroless, nonroot, no shell).
+#   litestream  continuous replication of /data/sonda.db to R2.
+#
+# All three share the named volume sonda-data at /data and run as uid 65532;
+# the images ship /data owned by 65532, so the fresh volume gets that owner.
+#
+# `exclude_from_hc` is a Coolify extension: plain `docker compose` rejects it.
+# To run this file outside Coolify, drop that line (scripts/restore-test.sh does).
+#
+# Variables written ${VAR:?} are required (Coolify blocks the deploy until set);
+# ${VAR:-x} have a default. Values: .env.example.
+
+services:
+  restore:
+    build:
+      context: .
+      target: litestream
+    command: ["restore", "-if-db-not-exists", "-if-replica-exists", "/data/sonda.db"]
+    environment:
+      LITESTREAM_ENDPOINT: ${R2_ENDPOINT:?}
+      LITESTREAM_BUCKET: ${R2_BUCKET:?}
+      LITESTREAM_PATH: ${R2_PATH:-sonda}
+      LITESTREAM_REGION: ${R2_REGION:-auto}
+      LITESTREAM_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?}
+      LITESTREAM_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?}
+      LITESTREAM_FORCE_PATH_STYLE: ${R2_FORCE_PATH_STYLE:-false}
+    volumes:
+      - sonda-data:/data
+    restart: "no"
+    exclude_from_hc: true
+
+  app:
+    build:
+      context: .
+      target: app
+      args:
+        VERSION: ${SONDA_VERSION:-dev}
+    depends_on:
+      restore:
+        condition: service_completed_successfully
+    environment:
+      SONDA_MCP_TOKEN: ${SONDA_MCP_TOKEN:?}
+      SONDA_INGEST_RATE_PER_MIN: ${SONDA_INGEST_RATE_PER_MIN:-60}
+      SONDA_INGEST_MAX_BATCH: ${SONDA_INGEST_MAX_BATCH:-100}
+      SONDA_INGEST_MAX_BODY_BYTES: ${SONDA_INGEST_MAX_BODY_BYTES:-262144}
+    volumes:
+      - sonda-data:/data
+    # No host port: Coolify's proxy routes the domain to container port 8080
+    # (domain set as https://<host>:8080 on this service, see docs/deploy.md).
+    expose:
+      - "8080"
+    # Same as the image HEALTHCHECK, written here so Coolify shows it.
+    healthcheck:
+      test: ["CMD", "/sonda", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      start_interval: 2s
+      retries: 3
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+  litestream:
+    build:
+      context: .
+      target: litestream
+    command: ["replicate"]
+    depends_on:
+      restore:
+        condition: service_completed_successfully
+      # Start once the database file exists (app creates it on start).
+      app:
+        condition: service_healthy
+    environment:
+      LITESTREAM_ENDPOINT: ${R2_ENDPOINT:?}
+      LITESTREAM_BUCKET: ${R2_BUCKET:?}
+      LITESTREAM_PATH: ${R2_PATH:-sonda}
+      LITESTREAM_REGION: ${R2_REGION:-auto}
+      LITESTREAM_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?}
+      LITESTREAM_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?}
+      LITESTREAM_FORCE_PATH_STYLE: ${R2_FORCE_PATH_STYLE:-false}
+    volumes:
+      - sonda-data:/data
+    restart: unless-stopped
+    # Time for the final sync to R2 on shutdown.
+    stop_grace_period: 30s
+
+volumes:
+  sonda-data:
