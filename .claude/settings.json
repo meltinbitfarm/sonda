@@ -1,0 +1,142 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git push *)",
+      "Bash(git -C * push *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh release create *)",
+      "Bash(npm publish *)",
+      "Bash(pnpm publish *)",
+      "Bash(yarn publish *)",
+      "Bash(yarn npm publish *)",
+      "Bash(bun publish *)",
+      "Bash(cargo publish *)",
+      "Bash(twine upload *)",
+      "Bash(uv publish *)",
+      "Bash(poetry publish *)",
+      "Bash(gem push *)",
+      "Bash(docker push *)",
+      "Bash(vercel)",
+      "Bash(vercel deploy *)",
+      "Bash(vercel --prod *)",
+      "Bash(netlify deploy *)",
+      "Bash(firebase deploy *)",
+      "Bash(fly deploy *)",
+      "Bash(flyctl deploy *)",
+      "Bash(wrangler deploy *)",
+      "Bash(wrangler publish *)",
+      "Bash(wrangler pages deploy *)",
+      "Bash(sendmail *)",
+      "Bash(mail *)",
+      "Bash(mailx *)",
+      "Artifact",
+      "SendFeedback",
+      "ScheduleWakeup",
+      "ReportFindings",
+      "ListAgents",
+      "AskUserQuestion",
+      "Agent(claude)",
+      "Agent(claude-code-guide)",
+      "Agent(Plan)",
+      "Agent(statusline-setup)"
+    ],
+    "ask": [
+      "Bash(git checkout -- *)",
+      "Bash(git checkout * -- *)",
+      "Bash(git checkout .)",
+      "Bash(git checkout -f *)",
+      "Bash(git switch -f *)",
+      "Bash(git switch --discard-changes *)",
+      "Bash(git branch -D *)",
+      "Bash(git commit --amend *)"
+    ],
+    "allow": [
+      "Bash(git status *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git show *)",
+      "Bash(git rev-parse *)",
+      "Bash(git merge-base *)",
+      "Bash(git stash list *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git switch *)",
+      "Bash(git checkout *)",
+      "Bash(git branch *)",
+      "Bash(git merge *)",
+      "Bash(jerome state *)",
+      "Bash(jerome request *)",
+      "Bash(jerome note *)",
+      "Bash(jerome digest *)",
+      "Bash(jerome deps *)",
+      "Bash(npm test)",
+      "Bash(pnpm test)",
+      "Bash(yarn test)",
+      "Bash(bun test)",
+      "Bash(node --test)",
+      "Bash(pytest)",
+      "Bash(cargo test)",
+      "Bash(go test ./...)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jerome hook session-start"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jerome hook subagent-stop",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jerome hook stop",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jerome hook session-end",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jerome hook pre-tool-use"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "jerome statusline"
+  }
+}

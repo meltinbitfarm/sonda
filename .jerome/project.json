@@ -1,0 +1,18 @@
+{
+  "schema": "jerome.project/v1",
+  "jerome": "0.20.2",
+  "files": {
+    ".claude/rules/jerome.md": "460ec52893c98924f80f9e70e672b7936c51abd3ae1e5609d2b43a5c8a852b6a",
+    ".claude/skills/docs/SKILL.md": "162e83623a80cd5b739ec848c90326b980553c8b245efb999b2089ae1cf4ddd5",
+    ".claude/skills/project-brief/references/brief-v3.md": "d86d9fc9962b4625240a003d685fc59b87433da242b3cb532ccc669524dd14c4",
+    ".claude/skills/project-brief/references/briefing.md": "8b6b6c39de0954757b92cd4c3d8b82b14a6b28e7e980247dac6da71d677db1a7",
+    ".claude/skills/project-brief/SKILL.md": "0a045117a9195d3e1b63418467c63e447cb630dbb079f2e18f3125bf4cb48ecc",
+    ".claude/skills/project-team/agents/analyst.md": "950ce9358da787cb6efe7b9af797a489540e35f17c0817024014be18b310585f",
+    ".claude/skills/project-team/agents/clerk.md": "a4a2621911feb5ed468625c8ffc75ae49ead994ff1003b5df1b5c196ca7a4684",
+    ".claude/skills/project-team/agents/developer.md": "18a8f2ae7e59d0840eab889e3a89b7555bdae8f6c2369e0c3953511bc9b00e8c",
+    ".claude/skills/project-team/agents/documentarist.md": "e6143e16b41f2c51b8dd4439025a2bec7954598f30f9f91065ebfeccb5b5120c",
+    ".claude/skills/project-team/agents/researcher.md": "257e0be8424ce43269accf661aa9343c708f308fadb28bb1fed8babcde23b7eb",
+    ".claude/skills/project-team/agents/writer.md": "9825052e796f49a37c40857f20075f04c251259b5dc38437f07e7c4a8cea7335",
+    ".claude/skills/project-team/SKILL.md": "a61bf3edd8b5ae73c5b669a8c662a9e750bd11fa5c30c330972f5929a4e87740"
+  }
+}
