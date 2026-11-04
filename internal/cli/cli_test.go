@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -148,6 +149,36 @@ func newUUID(t *testing.T) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
+func TestHealthcheckFails(t *testing.T) {
+	// Nothing listening.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	free := ln.Addr().String()
+	ln.Close()
+	if code, _, errOut := run(t, map[string]string{"SONDA_ADDR": free}, "healthcheck"); code != 1 || !strings.Contains(errOut, "healthcheck") {
+		t.Errorf("nothing listening: code %d, %q", code, errOut)
+	}
+	// Unhealthy server.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "db down", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	if code, _, errOut := run(t, map[string]string{"SONDA_ADDR": strings.TrimPrefix(srv.URL, "http://")}, "healthcheck"); code != 1 || !strings.Contains(errOut, "503") {
+		t.Errorf("503: code %d, %q", code, errOut)
+	}
+	if code, _, _ := run(t, map[string]string{"SONDA_ADDR": "no-port"}, "healthcheck"); code != 1 {
+		t.Errorf("bad SONDA_ADDR: code %d", code)
+	}
+}
+
+func TestVersion(t *testing.T) {
+	if code, out, _ := run(t, nil, "version"); code != 0 || out != Version+"\n" {
+		t.Fatalf("version: %d %q", code, out)
+	}
+}
+
 func TestUsage(t *testing.T) {
 	if code, _, errOut := run(t, nil); code != 2 || !strings.Contains(errOut, "usage") {
 		t.Fatalf("no args: %d %q", code, errOut)
@@ -181,6 +212,14 @@ func TestServe(t *testing.T) {
 		t.Fatalf("serve exited early with %d", code)
 	case <-time.After(10 * time.Second):
 		t.Fatal("serve did not start")
+	}
+	// The healthcheck subcommand, with the port taken from SONDA_ADDR and a
+	// wildcard host (as in the container: SONDA_ADDR=:8080).
+	_, port, _ := net.SplitHostPort(addr)
+	for _, a := range []string{":" + port, "0.0.0.0:" + port, "[::]:" + port, addr} {
+		if code, _, errOut := run(t, map[string]string{"SONDA_ADDR": a}, "healthcheck"); code != 0 {
+			t.Errorf("healthcheck %s: code %d, %q", a, code, errOut)
+		}
 	}
 	resp, err := http.Get("http://" + addr + "/healthz")
 	if err != nil {

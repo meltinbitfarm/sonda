@@ -35,6 +35,9 @@ const usage = `usage:
                               replace the app's ingest key and print the new one;
                               the old key stops working immediately
   sonda app list              list apps
+  sonda healthcheck           GET /healthz on the local server, exit 0 if healthy
+                              (Docker HEALTHCHECK: the image has no shell or curl)
+  sonda version               print the version
 
 environment:
   SONDA_ADDR      listen address (default :8080)
@@ -45,6 +48,10 @@ environment:
   SONDA_INGEST_MAX_BATCH       events per request (default 100)
   SONDA_INGEST_MAX_BODY_BYTES  request body size, also after gzip (default 262144)
 `
+
+// Version is set at build time with
+// -ldflags "-X github.com/meltinbitfarm/sonda/internal/cli.Version=...".
+var Version = "dev"
 
 // onListen, if set, is called with the bound address once serve is listening (tests).
 var onListen func(addr string)
@@ -72,6 +79,11 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		err = appRotateKey(ctx, dbPath, args[2], stdout, stderr)
 	case len(args) == 2 && args[0] == "app" && args[1] == "list":
 		err = appList(ctx, dbPath, stdout)
+	case len(args) == 1 && args[0] == "healthcheck":
+		err = healthcheck(ctx, env("SONDA_ADDR", DefaultAddr))
+	case len(args) == 1 && args[0] == "version":
+		fmt.Fprintln(stdout, Version)
+		return 0
 	case len(args) == 1 && (args[0] == "help" || args[0] == "-h" || args[0] == "--help"):
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -152,7 +164,7 @@ func serve(ctx context.Context, addr, dbPath, mcpToken string, cfg server.Config
 		MaxHeaderBytes:    16 << 10,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
-	log.Info("listening", "addr", ln.Addr().String(), "db", dbPath,
+	log.Info("listening", "version", Version, "addr", ln.Addr().String(), "db", dbPath,
 		"rate_per_min", cfg.RatePerMinute, "max_batch", cfg.MaxBatch, "max_body_bytes", cfg.MaxBodyBytes,
 		"mcp", mcpserver.Path)
 	if onListen != nil {
@@ -174,6 +186,35 @@ func serve(ctx context.Context, addr, dbPath, mcpToken string, cfg server.Config
 	}
 	if err := <-errc; !errors.Is(err, http.ErrServerClosed) {
 		return err
+	}
+	return nil
+}
+
+// healthcheck asks the server listening on addr (SONDA_ADDR) for /healthz
+// over loopback. A wildcard or empty host means the server listens on every
+// interface, loopback included.
+func healthcheck(ctx context.Context, addr string) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("SONDA_ADDR %q: %w", addr, err)
+	}
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		host = "127.0.0.1"
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(host, port)+"/healthz", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("healthcheck: %w", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<10))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("healthcheck: /healthz answered %d", resp.StatusCode)
 	}
 	return nil
 }
