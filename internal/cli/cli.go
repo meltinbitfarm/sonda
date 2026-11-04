@@ -1,0 +1,175 @@
+// Package cli implements the sonda command line (D6).
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"strings"
+	"text/tabwriter"
+	"time"
+	"unicode/utf8"
+
+	"github.com/meltinbitfarm/sonda/internal/ingestkey"
+	"github.com/meltinbitfarm/sonda/internal/server"
+	"github.com/meltinbitfarm/sonda/internal/store"
+)
+
+// Defaults, overridable with SONDA_ADDR and SONDA_DB_PATH.
+const (
+	DefaultAddr   = ":8080"
+	DefaultDBPath = "/data/sonda.db"
+	maxAppNameLen = 100
+)
+
+const usage = `usage:
+  sonda serve                 start the HTTP server
+  sonda app create "<name>"   create an app and print its ingest key
+  sonda app list              list apps
+
+environment:
+  SONDA_ADDR      listen address (default :8080)
+  SONDA_DB_PATH   SQLite database path (default /data/sonda.db)
+`
+
+// onListen, if set, is called with the bound address once serve is listening (tests).
+var onListen func(addr string)
+
+// Run executes the command in args (without the program name) and returns the exit code.
+func Run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	env := func(k, def string) string {
+		if v := getenv(k); v != "" {
+			return v
+		}
+		return def
+	}
+	dbPath := env("SONDA_DB_PATH", DefaultDBPath)
+
+	var err error
+	switch {
+	case len(args) == 1 && args[0] == "serve":
+		err = serve(ctx, env("SONDA_ADDR", DefaultAddr), dbPath, stderr)
+	case len(args) == 3 && args[0] == "app" && args[1] == "create":
+		err = appCreate(ctx, dbPath, args[2], stdout, stderr)
+	case len(args) == 2 && args[0] == "app" && args[1] == "list":
+		err = appList(ctx, dbPath, stdout)
+	case len(args) == 1 && (args[0] == "help" || args[0] == "-h" || args[0] == "--help"):
+		fmt.Fprint(stdout, usage)
+		return 0
+	default:
+		fmt.Fprint(stderr, usage)
+		return 2
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "sonda: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func serve(ctx context.Context, addr, dbPath string, stderr io.Writer) error {
+	log := slog.New(slog.NewTextHandler(stderr, nil))
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer st.Close()
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{
+		Handler:           server.New(st),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+	}
+	log.Info("listening", "addr", ln.Addr().String(), "db", dbPath)
+	if onListen != nil {
+		onListen(ln.Addr().String())
+	}
+
+	errc := make(chan error, 1)
+	go func() { errc <- srv.Serve(ln) }()
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+	}
+	log.Info("shutting down")
+	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(sctx); err != nil {
+		return err
+	}
+	if err := <-errc; !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+func validateAppName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	switch {
+	case name == "":
+		return "", errors.New("app name is empty")
+	case !utf8.ValidString(name):
+		return "", errors.New("app name is not valid UTF-8")
+	case utf8.RuneCountInString(name) > maxAppNameLen:
+		return "", fmt.Errorf("app name longer than %d characters", maxAppNameLen)
+	case strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }):
+		return "", errors.New("app name contains control characters")
+	}
+	return name, nil
+}
+
+func appCreate(ctx context.Context, dbPath, name string, stdout, stderr io.Writer) error {
+	name, err := validateAppName(name)
+	if err != nil {
+		return err
+	}
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer st.Close()
+
+	key, hash := ingestkey.Generate()
+	app, err := st.CreateApp(ctx, name, hash, time.Now())
+	if errors.Is(err, store.ErrDuplicate) {
+		return fmt.Errorf("an app named %q already exists", name)
+	}
+	if err != nil {
+		return err
+	}
+	// The key goes alone to stdout so it can be captured; it cannot be shown again.
+	fmt.Fprintf(stderr, "created app %q (id %d). Ingest key below: copy it now, it is not stored and cannot be shown again.\n", app.Name, app.ID)
+	fmt.Fprintln(stdout, key)
+	return nil
+}
+
+func appList(ctx context.Context, dbPath string, stdout io.Writer) error {
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer st.Close()
+	apps, err := st.ListApps(ctx)
+	if err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tNAME\tCREATED")
+	for _, a := range apps {
+		fmt.Fprintf(tw, "%d\t%s\t%s\n", a.ID, a.Name, a.CreatedAt.Format(time.RFC3339))
+	}
+	return tw.Flush()
+}
