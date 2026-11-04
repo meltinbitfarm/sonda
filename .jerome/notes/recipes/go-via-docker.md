@@ -34,8 +34,12 @@ Smoke test of the CLI and server inside one container:
     docker run --rm -v "$PWD":/src -w /src -v sonda-gomod:/go/pkg/mod -v sonda-gocache:/root/.cache/go-build \
       -e CGO_ENABLED=0 golang:1.27-alpine sh -c '
         go build -o /tmp/sonda ./cmd/sonda && export SONDA_DB_PATH=/tmp/t.db &&
+        export SONDA_MCP_TOKEN=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d " \n") &&
         /tmp/sonda app create "Demo" && /tmp/sonda app list &&
         (SONDA_ADDR=127.0.0.1:8080 /tmp/sonda serve & sleep 1; wget -qO- http://127.0.0.1:8080/healthz; kill %1; wait)'
+
+`serve` refuses to start without `SONDA_MCP_TOKEN` (at least 32 characters, step 3); the line above
+generates one. MCP smoke test with curl: notes/recipes/mcp-connect.md.
 
 Notes:
 - `go test -race` needs CGO and is not available with this recipe (alpine has no gcc); use
