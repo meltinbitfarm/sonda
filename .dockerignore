@@ -1,0 +1,13 @@
+# Only go.mod, go.sum, cmd/, internal/ and deploy/ are needed to build the images.
+.git
+.claude
+.jerome
+.env
+.env.*
+bin
+docs
+scripts
+sdk
+Package.swift
+*.md
+docker-compose*.yml

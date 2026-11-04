@@ -1,0 +1,56 @@
+# Local restore test (O5): MinIO in place of R2. Used by scripts/restore-test.sh
+# on top of docker-compose.yml; not for Coolify.
+#
+# MinIO's own images are no longer published on Docker Hub/quay (since late
+# 2025); Chainguard's free image is used, pinned by digest (only :latest is free).
+# Its data lives in an external volume created by the script, so
+# `docker compose down -v` removes Sonda's data volume but keeps the "R2" replica.
+
+services:
+  minio:
+    image: cgr.dev/chainguard/minio@sha256:3c60a2a8c4d33409a9bc7a623a7fcbfb4605adc3d89422d2f53b3f673a6e5597
+    # Test only: root, so MinIO can write the fresh external volume.
+    user: "0:0"
+    command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${R2_ACCESS_KEY_ID:?}
+      MINIO_ROOT_PASSWORD: ${R2_SECRET_ACCESS_KEY:?}
+    volumes:
+      - minio-data:/data
+
+  # Creates the bucket (the R2 equivalent is a step in docs/deploy.md).
+  # 200 = created, 409 = already there: both fine.
+  minio-init:
+    image: curlimages/curl:8.23.0
+    depends_on:
+      - minio
+    environment:
+      AK: ${R2_ACCESS_KEY_ID:?}
+      SK: ${R2_SECRET_ACCESS_KEY:?}
+      BUCKET: ${R2_BUCKET:?}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        for i in $$(seq 1 60); do
+          code=$$(curl -s -o /dev/null -w '%{http_code}' --aws-sigv4 'aws:amz:us-east-1:s3' \
+            -u "$$AK:$$SK" -X PUT "http://minio:9000/$$BUCKET") || code=000
+          case "$$code" in 200|409) echo "bucket $$BUCKET ready ($$code)"; exit 0;; esac
+          sleep 1
+        done
+        echo "bucket $$BUCKET not created (last status $$code)"; exit 1
+    restart: "no"
+
+  restore:
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+
+  app:
+    ports:
+      - "127.0.0.1:${SONDA_TEST_PORT:-18080}:8080"
+
+volumes:
+  minio-data:
+    external: true
+    name: ${SONDA_TEST_MINIO_VOLUME:-sonda-restore-test-minio}
