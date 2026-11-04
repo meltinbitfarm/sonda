@@ -27,6 +27,9 @@ struct Dependencies: Sendable {
     var maxEventAge: TimeInterval = 30 * 24 * 60 * 60
     var backoffBase: TimeInterval = 5
     var backoffCap: TimeInterval = 10 * 60
+    /// Upper bound for a server's Retry-After: a proxy answering 429 with a day would
+    /// otherwise stop sending while the queue cap drops events.
+    var maxRetryAfter: TimeInterval = 60 * 60
 
     static func live(ingestKey: String, endpoint: URL) -> Dependencies {
         let config = URLSessionConfiguration.ephemeral
@@ -96,7 +99,9 @@ actor Engine {
     private(set) var failures = 0
     /// No send before this time (backoff or Retry-After).
     private(set) var nextAttemptAt: Date?
-    private var isFlushing = false
+    /// The send in progress. A second caller awaits it instead of returning at once, so a
+    /// background task ends only when the request in flight has finished.
+    private var runningFlush: Task<Void, Never>?
     private var timerTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
 
@@ -197,8 +202,10 @@ actor Engine {
 
     /// Starts a new session (and emits app.session_started) if there is none or the last
     /// activity is older than the timeout; then records `date` as the last activity.
+    /// A gap larger than the timeout in either direction ends the session: if the device clock
+    /// moved back by hours, waiting for it to catch up would keep one session open until then.
     private func touchSession(at date: Date) {
-        let expired = lastActivity.map { date.timeIntervalSince($0) > deps.sessionTimeout } ?? true
+        let expired = lastActivity.map { abs(date.timeIntervalSince($0)) > deps.sessionTimeout } ?? true
         if sessionID == nil || expired {
             sessionID = UUID().uuidString.lowercased()
             deps.defaults.set(sessionID, forKey: Keys.sessionID)
@@ -250,12 +257,25 @@ actor Engine {
     }
 
     /// Sends queued events in batches until the queue is empty or an attempt fails.
+    /// If a send is already running, waits for it to finish instead of starting another one.
     func flush() async {
-        guard sendsEvents, !unauthorized, !isFlushing else { return }
+        if let running = runningFlush {
+            await running.value
+            return
+        }
+        guard sendsEvents, !unauthorized else { return }
         if let next = nextAttemptAt, deps.now() < next { return }
-        isFlushing = true
-        defer { isFlushing = false }
+        // Created on the actor and stored before it can run: the task body starts only after
+        // this method suspends, so `runningFlush` is always set while the send is in progress.
+        let task = Task {
+            defer { self.runningFlush = nil }
+            await self.sendQueue()
+        }
+        runningFlush = task
+        await task.value
+    }
 
+    private func sendQueue() async {
         for _ in 0..<1000 {
             let now = deps.now()
             store.removeOlder(than: cutoff(now: now))
@@ -286,7 +306,7 @@ actor Engine {
                 }
             case let .rateLimited(retryAfter):
                 if let retryAfter {
-                    postpone(by: retryAfter)
+                    postpone(by: min(retryAfter, deps.maxRetryAfter))
                 } else {
                     failures += 1
                     postpone(by: backoffDelay())

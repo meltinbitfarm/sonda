@@ -101,6 +101,17 @@ import Testing
         #expect(EventRules.validate(props: ["k": .string(String(repeating: "a", count: 2000))]) == nil)
     }
 
+    @Test func propsSizeCountsControlCharactersAtTheirLongestEscape() {
+        // 1000 newlines: 2000 bytes as `\n`, up to 6000 as `\u000a`. Counted at the worst case.
+        let newlines: [String: SondaValue] = ["k": .string(String(repeating: "\n", count: 1000))]
+        #expect(EventRules.serverEncodedSize(of: newlines) == 6000 + #"{"k":""}"#.utf8.count)
+        #expect(EventRules.validate(props: newlines) != nil)
+        // A few control characters in a normal value still pass.
+        #expect(EventRules.validate(props: ["k": .string("line one\nline two\ttab")]) == nil)
+        let plain: [String: SondaValue] = ["k": .string("abc")]
+        #expect(EventRules.serverEncodedSize(of: plain) == #"{"k":"abc"}"#.utf8.count)
+    }
+
     @Test func optionalFieldsAreCleaned() {
         #expect(EventRules.field("") == nil)
         #expect(EventRules.field(nil) == nil)

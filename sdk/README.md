@@ -1,7 +1,10 @@
 # Sonda Swift SDK
 
 Sends app events to a self-hosted Sonda server. iOS 17+ / macOS 14+ (Mac Catalyst and iPad apps on Mac
-included), Swift 6, no dependencies.
+included), Swift 6, no dependencies. The package needs swift-tools 6.0, i.e. Xcode 16 or later.
+
+The SDK links StoreKit (to tell App Store builds from TestFlight and to read the storefront). No
+capability or entitlement has to be added to the app.
 
 ## Add the package
 
@@ -9,7 +12,7 @@ Xcode: File > Add Package Dependencies, paste the repository URL
 
     https://github.com/meltinbitfarm/sonda.git
 
-pick a version tag (or a branch while developing) and add the `Sonda` library to the app target.
+pick a version tag (or a branch while developing; the tags are shared with the Go server) and add the `Sonda` library to the app target.
 The repository also contains the Go server; SwiftPM only builds `sdk/Sources/Sonda`.
 
 In a `Package.swift`:
@@ -40,7 +43,11 @@ struct MyApp: App {
 }
 ```
 
-`endpoint` is the server's base URL; the SDK posts to `<endpoint>/v1/events`.
+`endpoint` is the server's base URL; the SDK posts to `<endpoint>/v1/events`. Use the `https` URL: a
+redirect from `http` turns the POST into a GET and the server never sees the events (they stay queued).
+
+Events tracked before `configure` are dropped (and logged), so call it before the first `track`.
+`configure` does no file or network work on the calling thread.
 
 From then on Sonda sends, by itself:
 - `app.first_launch` on the first launch (a random `user_id` is created and kept in UserDefaults),
@@ -51,9 +58,20 @@ From then on Sonda sends, by itself:
 ## Only production sends
 
 Events are **dropped** (not stored, not sent) in DEBUG builds, in the simulator, in Xcode installs and in
-TestFlight (D8). Only App Store builds send. The check uses `AppTransaction.environment`, with the
-sandbox receipt as fallback. To see that instrumentation works, use a Release build from the App Store or
-read the device console (subsystem `dev.sonda.sdk`): rejected events are logged there.
+TestFlight (D8). The check uses `AppTransaction.environment`, with the sandbox receipt as fallback. To see
+that instrumentation works, use a Release build from the App Store or read the device console (subsystem
+`dev.sonda.sdk`): rejected events are logged there.
+
+Precisely, a build sends unless one of these holds:
+- it is compiled with the `DEBUG` flag (Xcode's Debug configuration sets it; keep using the standard
+  Debug/Release configurations: a custom debug configuration without `DEBUG` is caught only by the checks
+  below);
+- it runs in the simulator;
+- StoreKit says the install comes from Xcode or TestFlight (sandbox), or, when StoreKit cannot answer, the
+  receipt is a sandbox receipt.
+
+So Release builds distributed outside the App Store (Ad Hoc, Enterprise, a Developer ID Mac app) **do send**,
+like App Store builds.
 
 ## Standard events (D12)
 
@@ -118,11 +136,21 @@ Events go to a queue file in Application Support (excluded from backups), so the
 offline periods. Sonda sends in gzip batches of up to 100 events every 30 s while the app runs, when it
 comes to the foreground and when it goes to the background, and when 100 events are waiting.
 On errors it retries with exponential backoff (5 s doubling up to 10 min, with jitter) and honours
-`Retry-After`. The queue keeps at most 2000 events and drops events older than 30 days (the server
-refuses them). If the server refuses the ingest key (401) sending stops until the next launch, the queue
-is kept. `Sonda.flush()` asks for an immediate send.
+`Retry-After` up to one hour. A batch is removed only when the server confirms it (a 200 with the ingest
+response; a captive portal's 200 page does not count) or refuses it for good (400, 415); any other status,
+404 and 405 from a proxy included, is retried. The queue keeps at most 2000 events (when full the oldest
+200 are dropped at once) and drops events older than 30 days (the server refuses them). If the server
+refuses the ingest key (401) sending stops until the next launch, the queue is kept. `Sonda.flush()` asks
+for an immediate send. When the app goes to the background the send runs inside a background task that
+ends when the request in flight has finished.
 
-Nothing here identifies a person: no IDFV, no IDFA, no IP stored server-side (D9, D10).
+## Privacy
+
+No IDFV, no IDFA, no IP stored server-side (D9, D10). `user_id` is a random UUID kept in UserDefaults:
+iCloud backup and device-to-device migration restore it, so two devices of the same person may share it.
+Each event carries device model, OS version, locale, region and App Store storefront: together they are a
+coarse device fingerprint, accepted by D10 and to be declared as such in the App Store privacy details.
+Props are the only place personal data could enter: keep them free of it (D11).
 
 ## Tests
 

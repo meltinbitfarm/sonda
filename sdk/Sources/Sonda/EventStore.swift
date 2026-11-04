@@ -17,6 +17,12 @@ final class EventStore {
     let fileURL: URL
     let maxEvents: Int
     private(set) var events: [QueuedEvent] = []
+    /// Full rewrites of the file since init (tests: the cap must not rewrite on every event).
+    private(set) var rewrites = 0
+
+    /// When the cap is exceeded the oldest events are dropped down to this many (90% of the
+    /// cap), so a long offline period rewrites the file once every ~cap/10 events, not on each.
+    var trimTarget: Int { max(0, maxEvents - max(1, maxEvents / 10)) }
 
     init(fileURL: URL, maxEvents: Int) {
         self.fileURL = fileURL
@@ -29,8 +35,8 @@ final class EventStore {
     func append(_ event: QueuedEvent) {
         events.append(event)
         if events.count > maxEvents {
-            // Cap reached: drop the oldest events and rewrite.
-            events.removeFirst(events.count - maxEvents)
+            // Cap exceeded: drop the oldest events in a block and rewrite.
+            events.removeFirst(events.count - trimTarget)
             persistAll()
             return
         }
@@ -94,6 +100,7 @@ final class EventStore {
     }
 
     private func persistAll() {
+        rewrites += 1
         var data = Data()
         for ev in events {
             data.append(ev.json)

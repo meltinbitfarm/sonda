@@ -4,7 +4,9 @@ import Foundation
 enum SendOutcome: Equatable, Sendable {
     /// 200: remove the whole batch (accepted, duplicates and rejected alike).
     case delivered(accepted: Int, duplicates: Int, rejected: Int)
-    /// 400, 415 and other permanent 4xx: the batch will never succeed, drop it.
+    /// 400 and 415 (the contract): the batch will never succeed, drop it. Every other 4xx
+    /// (404/405 from a proxy with no route, 409, 410, 421...) is retried: dropping on them would
+    /// erase the queue during a redeploy or with a mistyped endpoint.
     case dropBatch(status: Int)
     /// 401: keep the queue, stop sending until the next launch.
     case unauthorized
@@ -12,7 +14,8 @@ enum SendOutcome: Equatable, Sendable {
     case tooLarge
     /// 429: retry the same batch after the given delay (seconds), or the backoff if nil.
     case rateLimited(retryAfter: TimeInterval?)
-    /// 5xx, 408, network errors: retry with exponential backoff.
+    /// 5xx, other 4xx, a 2xx whose body is not the ingest response (captive portal, proxy
+    /// page), network errors: retry with exponential backoff.
     case retry
 }
 
@@ -71,23 +74,27 @@ enum Transport {
     static func outcome(status: Int, headers: [AnyHashable: Any], body: Data, now: Date) -> SendOutcome {
         switch status {
         case 200..<300:
-            let r = try? JSONDecoder().decode(IngestResponse.self, from: body)
-            if let errors = r?.errors, !errors.isEmpty {
+            // Only the server's own answer proves delivery. A captive portal or a proxy page can
+            // also answer 200 (URLSession follows redirects): treat it as a failed attempt.
+            guard let r = try? JSONDecoder().decode(IngestResponse.self, from: body),
+                  let accepted = r.accepted else {
+                Log.sdk.error("Sonda: HTTP \(status) without an ingest response, will retry")
+                return .retry
+            }
+            if let errors = r.errors, !errors.isEmpty {
                 for e in errors.prefix(10) {
                     Log.sdk.debug("event \(e.index) rejected: \(e.reason, privacy: .public)")
                 }
             }
-            return .delivered(accepted: r?.accepted ?? 0, duplicates: r?.duplicates ?? 0,
-                              rejected: r?.rejected ?? 0)
+            return .delivered(accepted: accepted, duplicates: r.duplicates ?? 0,
+                              rejected: r.rejected ?? 0)
         case 401, 403:
             return .unauthorized
         case 413:
             return .tooLarge
         case 429:
             return .rateLimited(retryAfter: retryAfter(headers: headers, now: now))
-        case 408:
-            return .retry
-        case 400..<500:
+        case 400, 415:
             return .dropBatch(status: status)
         default:
             return .retry

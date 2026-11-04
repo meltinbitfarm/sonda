@@ -51,12 +51,33 @@ import Testing
         let h = Harness()
         h.maxQueuedEvents = 5
         let e = await h.engine()
+        // 2 automatic + 8: over the cap of 5 the queue is trimmed to 4 (90%), oldest first.
         for i in 0..<8 { await e.track("feature.used", ["n": .int(i)], at: h.clock.now) }
-        #expect(await e.queuedEvents.count == 5)
+        let queued = await e.queuedEvents
+        #expect(queued.count == 4)
         let reloaded = EventStore(fileURL: h.queueURL, maxEvents: 5)
-        #expect(reloaded.events == (await e.queuedEvents))
-        let last = String(decoding: reloaded.events.last!.json, as: UTF8.self)
-        #expect(last.contains(#""n":7"#))
+        #expect(reloaded.events == queued)
+        let ns = queued.map { String(decoding: $0.json, as: UTF8.self) }
+        #expect(zip(ns, 4...7).allSatisfy { json, n in json.contains(#""n":\#(n)"#) })
+    }
+
+    @Test func queueAtCapIsNotRewrittenOnEveryEvent() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("sonda-cap-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("queue.jsonl")
+        let store = EventStore(fileURL: url, maxEvents: 2000)
+        #expect(store.trimTarget == 1800)
+        for i in 0..<6000 {
+            let id = UUID().uuidString.lowercased()
+            let json = Data(#"{"event_id":"\#(id)","name":"feature.used","ts":\#(i),"user_id":"u","session_id":"s"}"#.utf8)
+            store.append(QueuedEvent(id: id, ts: Int64(i), json: json))
+        }
+        #expect(store.count <= 2000)
+        #expect(store.events.last?.ts == 5999)
+        // 4000 events over the cap, trimmed 200 at a time: about 20 rewrites (was 4000).
+        #expect(store.rewrites <= 25)
+        let reloaded = EventStore(fileURL: url, maxEvents: 2000)
+        #expect(reloaded.events == store.events)
     }
 
     @Test func eventsOlderThan30DaysAreDroppedNotSent() async throws {
@@ -119,7 +140,7 @@ import Testing
         #expect(await e.queuedEvents.isEmpty)
     }
 
-    @Test(arguments: [400, 404, 415, 422])
+    @Test(arguments: [400, 415])
     func permanentClientErrorDropsBatch(status: Int) async {
         let h = Harness()
         h.server.respond { _ in MockServer.Response(status: status, body: Data(#"{"error":"x"}"#.utf8)) }
@@ -128,6 +149,55 @@ import Testing
         #expect(h.server.requests.count == 1)
         #expect(await e.queuedEvents.isEmpty)
         #expect(await e.nextAttemptAt == nil)
+    }
+
+    /// 404/405 come from a proxy with no route (redeploy, wrong path, http->https redirect
+    /// turning the POST into a GET): the data must survive until the endpoint works again.
+    @Test(arguments: [402, 404, 405, 408, 409, 410, 421, 422, 425])
+    func otherClientErrorsKeepBatchAndRetry(status: Int) async {
+        let h = Harness()
+        h.server.respond { _ in MockServer.Response(status: status, body: Data("404 page not found".utf8)) }
+        let e = await h.engine()
+        await e.flush()
+        #expect(h.server.requests.count == 1)
+        #expect(await e.queuedEvents.count == 2)
+        #expect(await e.failures == 1)
+        #expect(await e.nextAttemptAt != nil)
+
+        h.server.respond { .ok(accepted: $0.events.count) }
+        h.clock.advance(3600)
+        await e.flush()
+        #expect(await e.queuedEvents.isEmpty)
+    }
+
+    /// A captive portal, a proxy or a default page answering 200 must not erase the queue.
+    @Test(arguments: [
+        "<html><body>Sign in to the Wi-Fi</body></html>",
+        "",
+        "{}",
+        #"{"error":"x"}"#,
+        #"{"accepted":"3"}"#,
+    ])
+    func okWithoutIngestResponseIsRetried(body: String) async {
+        let h = Harness()
+        h.server.respond { _ in
+            MockServer.Response(status: 200, headers: ["Content-Type": "text/html"], body: Data(body.utf8))
+        }
+        let e = await h.engine()
+        await e.flush()
+        #expect(h.server.requests.count == 1)
+        #expect(await e.queuedEvents.count == 2)
+        #expect(await e.failures == 1)
+        #expect(await e.nextAttemptAt != nil)
+    }
+
+    @Test func okOutcomeNeedsAcceptedCount() {
+        let now = Date()
+        #expect(Transport.outcome(status: 200, headers: [:], body: Data(#"{"accepted":0}"#.utf8), now: now)
+                == .delivered(accepted: 0, duplicates: 0, rejected: 0))
+        #expect(Transport.outcome(status: 200, headers: [:], body: Data(#"{"duplicates":2}"#.utf8), now: now)
+                == .retry)
+        #expect(Transport.outcome(status: 200, headers: [:], body: Data("OK".utf8), now: now) == .retry)
     }
 
     @Test func unauthorizedKeepsQueueAndStopsUntilNextLaunch() async {
@@ -166,6 +236,68 @@ import Testing
         let e = await h.engine()
         await e.flush()
         #expect(await e.queuedEvents.isEmpty)
+    }
+
+    // MARK: Concurrent flushes
+
+    /// A server that holds the first request until the test opens the gate.
+    private static func gatedHarness() -> (Harness, DispatchSemaphore) {
+        let h = Harness()
+        let gate = DispatchSemaphore(value: 0)
+        h.server.respond { r in
+            gate.wait()
+            return .ok(accepted: r.events.count)
+        }
+        return (h, gate)
+    }
+
+    private static func waitForRequest(_ h: Harness) async throws {
+        for _ in 0..<500 where h.server.requests.isEmpty {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try #require(!h.server.requests.isEmpty)
+    }
+
+    @Test func secondFlushWaitsForTheRunningOne() async throws {
+        let (h, gate) = Self.gatedHarness()
+        let e = await h.engine()
+        let first = Task { await e.flush() }
+        try await Self.waitForRequest(h)
+
+        let second = Task { () -> Int in
+            await e.flush()
+            return await e.queuedEvents.count
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        gate.signal()
+        #expect(await second.value == 0) // returned only after the batch was delivered
+        await first.value
+        #expect(h.server.requests.count == 1)
+    }
+
+    @Test func backgroundEndsOnlyAfterTheRunningSend() async throws {
+        let (h, gate) = Self.gatedHarness()
+        let e = await h.engine()
+        let periodic = Task { await e.flush() }
+        try await Self.waitForRequest(h)
+
+        let doneCalled = Locked(false)
+        let remaining = Task { () -> Int in
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                Task {
+                    await e.handle(.background(at: h.clock.now, done: {
+                        doneCalled.withLock { $0 = true }
+                        cont.resume()
+                    }))
+                }
+            }
+            return await e.queuedEvents.count
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(doneCalled.withLock { $0 } == false) // the request is still in flight
+        gate.signal()
+        #expect(await remaining.value == 0)
+        await periodic.value
     }
 
     // MARK: Retry
@@ -256,6 +388,16 @@ import Testing
         #expect(h.server.requests.count == 2)
         #expect(h.server.requests[0].eventIDs == h.server.requests[1].eventIDs)
         #expect(await e.queuedEvents.isEmpty)
+    }
+
+    @Test(arguments: ["86400", "Wed, 01 Jan 2031 00:00:00 GMT"])
+    func retryAfterIsCappedAtOneHour(header: String) async {
+        let h = Harness()
+        h.server.respond { _ in MockServer.Response(status: 429, headers: ["Retry-After": header]) }
+        let e = await h.engine()
+        await e.flush()
+        #expect(await e.nextAttemptAt == h.clock.now.addingTimeInterval(3600))
+        #expect(await e.queuedEvents.count == 2)
     }
 
     @Test func retryAfterParsing() {
