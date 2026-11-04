@@ -107,7 +107,20 @@ enum EventRules {
                 size += 3
             }
         }
+        // Control characters: count each as the longest escape (`\u00XX`, 6 bytes), whatever
+        // our encoder wrote, so a value full of them cannot pass here and fail on the server.
+        for case let .string(value) in props.values {
+            for scalar in value.unicodeScalars where scalar.value < 0x20 {
+                size += 6 - encodedLength(of: scalar)
+            }
+        }
         return size
+    }
+
+    /// Bytes our encoder writes for one control character inside a string (without quotes).
+    private static func encodedLength(of scalar: Unicode.Scalar) -> Int {
+        guard let data = try? JSONCoding.encoder.encode(String(Character(scalar))) else { return 6 }
+        return data.count - 2
     }
 }
 
