@@ -37,6 +37,10 @@ func TestOpenReadOnly(t *testing.T) {
 		SELECT sum(x) + length(json_extract('{"a":"bc"}', '$.a')) FROM c`).Scan(&n); err != nil || n != 17 {
 		t.Fatalf("recursive cte = %d, %v", n, err)
 	}
+	// Schema introspection pragmas are allowed as table-valued functions.
+	if err := ro.DB.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('events')").Scan(&n); err != nil || n < 10 {
+		t.Fatalf("pragma_table_info = %d, %v", n, err)
+	}
 
 	attachPath := filepath.Join(dir, "evil.db")
 	for _, stmt := range []string{

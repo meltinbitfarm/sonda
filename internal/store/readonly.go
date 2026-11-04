@@ -18,8 +18,9 @@ import (
 //  2. PRAGMA query_only=1 on every connection;
 //  3. an SQLite authorizer, installed on every connection by a private
 //     driver, allows only reading: SELECT, reading columns, functions
-//     (minus a short deny list) and recursive CTEs. ATTACH, PRAGMA
-//     statements, transactions, DDL and DML are refused at prepare time.
+//     (minus a short deny list), recursive CTEs and a few schema
+//     introspection pragmas (so pragma_table_info('events') works). ATTACH,
+//     other pragmas, transactions, DDL and DML are refused at prepare time.
 //
 // It does not create or migrate the database: open it with Open first.
 func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
@@ -64,10 +65,27 @@ var deniedFunctions = map[string]bool{
 	"edit":           true,
 }
 
+// introspectionPragmas have no side effects; they are allowed so the query
+// tool can describe the schema, e.g. SELECT * FROM pragma_table_info('events').
+var introspectionPragmas = map[string]bool{
+	"table_info":       true,
+	"table_xinfo":      true,
+	"table_list":       true,
+	"index_list":       true,
+	"index_info":       true,
+	"index_xinfo":      true,
+	"foreign_key_list": true,
+}
+
 func readOnlyAuthorizer(action sqlite.AuthorizerActionCode, arg1, arg2, _, _ string) sqlite.AuthorizerReturnCode {
 	switch action {
 	case sqlite.AuthSelect, sqlite.AuthRead, sqlite.AuthRecursive:
 		return sqlite.AuthorizerOK
+	case sqlite.AuthPragma:
+		if introspectionPragmas[strings.ToLower(arg1)] {
+			return sqlite.AuthorizerOK
+		}
+		return sqlite.AuthorizerDeny
 	case sqlite.AuthFunction:
 		if deniedFunctions[strings.ToLower(arg2)] {
 			return sqlite.AuthorizerDeny
