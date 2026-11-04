@@ -1,4 +1,5 @@
-// Package server exposes Sonda's HTTP API: GET /healthz and POST /v1/events.
+// Package server exposes Sonda's HTTP API: GET /healthz, POST /v1/events
+// and, when configured, the MCP endpoint at /mcp/sonda.
 //
 // D9: the client IP is never read, stored or logged. Handlers do not look at
 // r.RemoteAddr or forwarding headers, panics are recovered here (so net/http
@@ -32,6 +33,7 @@ type Config struct {
 	MaxBatch      int              // events per request
 	MaxBodyBytes  int64            // request body, after gzip decompression too
 	Now           func() time.Time // clock, for tests
+	MCP           http.Handler     // mounted at /mcp/sonda if set (mcpserver.New, already authenticated)
 }
 
 func (c *Config) defaults() {
@@ -65,6 +67,9 @@ func New(st *store.Store, cfg Config) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("POST /v1/events", s.ingest)
+	if cfg.MCP != nil {
+		mux.Handle("/mcp/sonda", cfg.MCP)
+	}
 	return s.recoverPanics(mux)
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -87,7 +88,7 @@ func TestServe(t *testing.T) {
 	done := make(chan int, 1)
 	go func() {
 		done <- Run(ctx, []string{"serve"}, envFor(map[string]string{
-			"SONDA_DB_PATH": db, "SONDA_ADDR": "127.0.0.1:0",
+			"SONDA_DB_PATH": db, "SONDA_ADDR": "127.0.0.1:0", "SONDA_MCP_TOKEN": testToken,
 		}), io.Discard, io.Discard)
 	}()
 
@@ -117,6 +118,23 @@ func TestServe(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("serve did not shut down")
+	}
+}
+
+const testToken = "test-mcp-token-0123456789abcdef0123456789abcdef"
+
+// A4: serve refuses to start without a (long enough) MCP token, before
+// creating the database.
+func TestServeRequiresMCPToken(t *testing.T) {
+	for token, want := range map[string]string{"": "SONDA_MCP_TOKEN is not set", "short": "at least 32 characters"} {
+		db := filepath.Join(t.TempDir(), "sonda.db")
+		code, _, errOut := run(t, map[string]string{"SONDA_DB_PATH": db, "SONDA_ADDR": "127.0.0.1:0", "SONDA_MCP_TOKEN": token}, "serve")
+		if code != 1 || !strings.Contains(errOut, want) {
+			t.Errorf("token %q: exit %d, stderr %q", token, code, errOut)
+		}
+		if _, err := os.Stat(db); !os.IsNotExist(err) {
+			t.Errorf("token %q: database created", token)
+		}
 	}
 }
 
@@ -174,6 +192,7 @@ func TestServeIngestEndToEnd(t *testing.T) {
 	go func() {
 		done <- Run(ctx, []string{"serve"}, envFor(map[string]string{
 			"SONDA_DB_PATH": db, "SONDA_ADDR": "127.0.0.1:0", "SONDA_INGEST_RATE_PER_MIN": "1",
+			"SONDA_MCP_TOKEN": testToken,
 		}), io.Discard, logs)
 	}()
 	var addr string
@@ -205,11 +224,37 @@ func TestServeIngestEndToEnd(t *testing.T) {
 		t.Fatalf("rate limit from env: %d", resp.StatusCode)
 	}
 
+	// MCP with the token in the URL (as Claude's remote connector does):
+	// the event just ingested is visible, and the token never reaches the logs.
+	mcpCall := func(token string) (int, string) {
+		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_apps","arguments":{}}}`
+		req, _ := http.NewRequest("POST", "http://"+addr+"/mcp/sonda?token="+token, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("MCP-Protocol-Version", "2025-06-18")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode, string(b)
+	}
+	if code, body := mcpCall(testToken); code != 200 || !strings.Contains(body, `\"events\":1`) {
+		t.Fatalf("mcp list_apps: %d %s", code, body)
+	}
+	if code, _ := mcpCall(testToken + "x"); code != 401 {
+		t.Fatalf("mcp wrong token: %d", code)
+	}
+
 	cancel()
 	<-done
 	l := logs.String()
-	if !strings.Contains(l, "accepted=1") {
-		t.Fatalf("no ingest log line:\n%s", l)
+	if !strings.Contains(l, "accepted=1") || !strings.Contains(l, "tool=list_apps") {
+		t.Fatalf("missing log lines:\n%s", l)
+	}
+	if strings.Contains(l, testToken[:16]) || strings.Contains(l, "token=") {
+		t.Errorf("token in logs:\n%s", l)
 	}
 	for _, ip := range []string{"127.0.0.1", "198.51.100.23"} {
 		if strings.Contains(l, ip) {

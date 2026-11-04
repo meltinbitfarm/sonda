@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/meltinbitfarm/sonda/internal/ingestkey"
+	"github.com/meltinbitfarm/sonda/internal/mcpserver"
 	"github.com/meltinbitfarm/sonda/internal/server"
 	"github.com/meltinbitfarm/sonda/internal/store"
 )
@@ -35,6 +36,8 @@ const usage = `usage:
 environment:
   SONDA_ADDR      listen address (default :8080)
   SONDA_DB_PATH   SQLite database path (default /data/sonda.db)
+  SONDA_MCP_TOKEN secret for the MCP endpoint /mcp/sonda, required by serve,
+                  at least 32 characters (e.g. openssl rand -hex 32)
   SONDA_INGEST_RATE_PER_MIN    requests per minute per ingest key (default 60)
   SONDA_INGEST_MAX_BATCH       events per request (default 100)
   SONDA_INGEST_MAX_BODY_BYTES  request body size, also after gzip (default 262144)
@@ -58,7 +61,7 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	case len(args) == 1 && args[0] == "serve":
 		var cfg server.Config
 		if cfg, err = serverConfig(getenv); err == nil {
-			err = serve(ctx, env("SONDA_ADDR", DefaultAddr), dbPath, cfg, stderr)
+			err = serve(ctx, env("SONDA_ADDR", DefaultAddr), dbPath, getenv("SONDA_MCP_TOKEN"), cfg, stderr)
 		}
 	case len(args) == 3 && args[0] == "app" && args[1] == "create":
 		err = appCreate(ctx, dbPath, args[2], stdout, stderr)
@@ -107,7 +110,14 @@ func serverConfig(getenv func(string) string) (server.Config, error) {
 	return cfg, nil
 }
 
-func serve(ctx context.Context, addr, dbPath string, cfg server.Config, stderr io.Writer) error {
+func serve(ctx context.Context, addr, dbPath, mcpToken string, cfg server.Config, stderr io.Writer) error {
+	// A4: no MCP token, no server. Checked before touching the database.
+	if mcpToken == "" {
+		return errors.New("SONDA_MCP_TOKEN is not set")
+	}
+	if len(mcpToken) < mcpserver.MinTokenLen {
+		return fmt.Errorf("SONDA_MCP_TOKEN must be at least %d characters (e.g. openssl rand -hex 32)", mcpserver.MinTokenLen)
+	}
 	log := server.NewLogger(stderr)
 	cfg.Logger = log
 	st, err := store.Open(ctx, dbPath)
@@ -115,6 +125,14 @@ func serve(ctx context.Context, addr, dbPath string, cfg server.Config, stderr i
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer st.Close()
+	ro, err := store.OpenReadOnly(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("open database read-only: %w", err)
+	}
+	defer ro.Close()
+	if cfg.MCP, err = mcpserver.New(ro.DB, mcpserver.Options{Token: mcpToken, Logger: log}); err != nil {
+		return err
+	}
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -130,7 +148,8 @@ func serve(ctx context.Context, addr, dbPath string, cfg server.Config, stderr i
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
 	log.Info("listening", "addr", ln.Addr().String(), "db", dbPath,
-		"rate_per_min", cfg.RatePerMinute, "max_batch", cfg.MaxBatch, "max_body_bytes", cfg.MaxBodyBytes)
+		"rate_per_min", cfg.RatePerMinute, "max_batch", cfg.MaxBatch, "max_body_bytes", cfg.MaxBodyBytes,
+		"mcp", mcpserver.Path)
 	if onListen != nil {
 		onListen(ln.Addr().String())
 	}
