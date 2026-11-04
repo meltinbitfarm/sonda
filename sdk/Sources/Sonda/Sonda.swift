@@ -10,7 +10,8 @@ import os
 /// ```
 ///
 /// Calls never block and never throw. Events are dropped in DEBUG builds, in the simulator,
-/// in Xcode installs and in TestFlight: only App Store builds send (D8).
+/// in Xcode installs and in TestFlight (D8); App Store builds send, and so do Release builds
+/// distributed outside the App Store (Ad Hoc, Enterprise, Developer ID).
 public enum Sonda {
     private static let channel = OSAllocatedUnfairLock<AsyncStream<Command>.Continuation?>(initialState: nil)
 
