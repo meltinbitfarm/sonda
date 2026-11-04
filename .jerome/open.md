@@ -18,4 +18,9 @@
 - none
 
 ## Backlog
-none
+- O1: passo 1 — scheletro Go, CLI `serve`/`app create`, SQLite WAL con tabelle apps/events (D19)
+- O2: passo 2 — `POST /v1/events` con ingest key, validazione D13, rate limit A2, niente IP
+- O3: passo 3 — MCP con i tool di D14 e autenticazione A4
+- O4: passo 4 — Dockerfile distroless, docker-compose.yml D5/A1, litestream.yml per R2
+- O5: passo 5 — prova di ripristino in locale con MinIO, ricetta in notes/recipes/
+- O6: passo 6 — revisione di sicurezza dell'analyst (D7, D13, tool query)
