@@ -44,15 +44,12 @@ func TestGuardConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := run(context.Background(), g, "retention", func(ctx context.Context) (int, error) {
+			_, err := run(context.Background(), g, "retention", func(context.Context) (int, error) {
 				mu.Lock()
 				running++
 				peak = max(peak, running)
 				mu.Unlock()
-				select {
-				case <-release:
-				case <-ctx.Done():
-				}
+				<-release // ignores ctx: holds the slot past the others' deadline
 				mu.Lock()
 				running--
 				mu.Unlock()
