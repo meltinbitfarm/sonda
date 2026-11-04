@@ -85,7 +85,7 @@ All bodies are JSON. Order of checks: key, rate limit, headers, body size, body 
 | 401 | missing/malformed Authorization, unknown key | `{"error":"..."}`, `WWW-Authenticate: Bearer` | keep the queue (bounded), stop sending until next launch |
 | 413 | more than 100 events, or body > 256 KB (compressed or decompressed) | `{"error":"..."}` | split the batch and retry |
 | 415 | Content-Type not JSON, Content-Encoding other than gzip | `{"error":"..."}` | bug: drop |
-| 429 | over 60 requests/min for this key | `{"error":"..."}`, `Retry-After: <seconds>` | wait Retry-After, retry same batch |
+| 429 | over 60 requests/min for this key, or the app's daily quota (50,000 stored events per UTC day, `SONDA_INGEST_DAILY_QUOTA`) is used up | `{"error":"..."}`, `Retry-After: <seconds>` (up to 86400 for the quota: until midnight UTC) | wait Retry-After, retry same batch |
 | 500/503 | storage error | `{"error":"..."}` | retry with backoff |
 
 `accepted` counts every valid event, including `duplicates`: events whose `event_id` was already stored

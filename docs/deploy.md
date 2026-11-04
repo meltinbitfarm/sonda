@@ -53,8 +53,8 @@ Litestream detects R2 from the endpoint and applies its quirks itself (signed pa
 
    Optional, with defaults: `R2_PATH` (`sonda`, key prefix in the bucket), `R2_REGION` (`auto`),
    `R2_FORCE_PATH_STYLE` (`false`), `SONDA_INGEST_RATE_PER_MIN` (60), `SONDA_INGEST_MAX_BATCH` (100),
-   `SONDA_INGEST_MAX_BODY_BYTES` (262144), `SONDA_VERSION` (`dev`, shown by `sonda version` and in the
-   startup log). See `.env.example`.
+   `SONDA_INGEST_MAX_BODY_BYTES` (262144), `SONDA_INGEST_DAILY_QUOTA` (50000 events per app per UTC day),
+   `SONDA_VERSION` (`dev`, shown by `sonda version` and in the startup log). See `.env.example`.
 4. **Domains**: on service `app` only, set `https://<sonda-host>:8080` (Q3: host still to choose).
    The `:8080` tells Coolify's proxy the container port; clients still use 443. No `ports:` are
    published; `restore` and `litestream` get no domain.
@@ -66,8 +66,42 @@ has no curl). `restore` is excluded from the stack health (`exclude_from_hc`). `
 healthcheck (scratch image, nothing to probe with); it restarts on failure (`unless-stopped`).
 Check its logs after the first deploy.
 
-Proxy access logs: claude.ai connects with `?token=` in the URL. Keep Coolify's proxy access logs off
-for this service (the default), or the MCP token ends up in them.
+Proxy access logs: keep Coolify's proxy access logs off for this service (the default). claude.ai
+connects with `?token=` in the URL, so the MCP token would end up in them; and every `POST /v1/events`
+line would carry the client's IP address, which Sonda itself never stores or logs (D9).
+
+### Limits and hardening
+
+`docker-compose.yml` sizes the stack for a small VPS (1-2 GB RAM), so a runaway query or a connection
+flood restarts one container instead of freezing the host:
+
+| Service | `mem_limit` (= `memswap_limit`) | `pids_limit` | `/tmp` tmpfs |
+|---|---|---|---|
+| `app` | 512m (`GOMEMLIMIT=384MiB`) | 200 | 128m (SQLite temp files, `SQLITE_TMPDIR`) |
+| `litestream` | 256m | 100 | 64m |
+| `restore` | 256m | 100 | 64m |
+
+All three also run with `read_only: true` (only the `/data` volume and `/tmp` are writable),
+`cap_drop: [ALL]` and `no-new-privileges`. tmpfs pages count against the memory limit. On a bigger
+server raise `mem_limit` and `memswap_limit` together (and `GOMEMLIMIT` to about 75% of the app's
+limit). `scripts/restore-test.sh` checks that all of this is in effect and that restore and
+replication still work with it. After the first Coolify deploy, check the same with
+`docker inspect -f '{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.Memory}}' <container>`
+(Coolify passes these compose keys through to Docker; not yet verified on a live Coolify).
+
+Inside the app: at most 8 database connections for ingestion and 4 read-only ones for MCP,
+at most 512 open client connections, malformed ingest keys refused before any database work, every
+MCP tool stopped after 25 s (at most 3 running at once), and `query` cannot build a string or blob
+larger than 16 MiB.
+
+Ingest quota: each app may store `SONDA_INGEST_DAILY_QUOTA` events per UTC day (default 50,000,
+duplicates not counted). Past it, `POST /v1/events` answers 429 with `Retry-After` until midnight UTC
+and logs `ingest: daily quota reached` once; the SDK keeps the events queued and retries. The count is
+kept in memory, so a restart resets it for the rest of the day. Raise the value if a real app gets
+near it.
+
+Disk: there is no retention (A3), so watch the volume size (`docker system df -v`, or the server's
+disk graph in Coolify) and the R2 bucket size, especially after a quota warning in the logs.
 
 ## 3. First app: ingest key
 
@@ -87,6 +121,12 @@ SDK configuration now. Other commands:
 
 `docker exec` runs as the image user (65532), so files it creates in `/data` keep the right owner.
 Do not add `-u root`.
+
+Leaked or abused ingest key (it ships inside the app binary, so anyone can extract it): run
+`rotate-key` for that app, ship an app update with the new key, and ask Claude (`event_counts` by
+`app_version`, `recent_events`) whether the fake events need excluding from analyses. Until the update
+spreads, old app versions fail with 401 and keep their events queued. The daily quota bounds what a
+leaked key can write in the meantime.
 
 ## 4. Connect Claude
 
