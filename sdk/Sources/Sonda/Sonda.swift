@@ -19,7 +19,10 @@ public enum Sonda {
     ///   - ingestKey: the app's key printed by `sonda app create` (`sk_...`). It is public by design (D7).
     ///   - endpoint: base URL of the Sonda server, e.g. `https://sonda.example.com`.
     public static func configure(ingestKey: String, endpoint: URL) {
-        configure(dependencies: .live(ingestKey: ingestKey, endpoint: endpoint), observeLifecycle: true)
+        // The live dependencies touch the file system (queue directory), sysctl and URLSession:
+        // built in the background task, so the caller (usually the main thread) only pays for
+        // a lock, a stream and a task.
+        configure(observeLifecycle: true) { .live(ingestKey: ingestKey, endpoint: endpoint) }
     }
 
     /// Records an event. `name` is `area.action_in_past_tense` in snake_case (D11), e.g.
@@ -35,7 +38,9 @@ public enum Sonda {
 
     // MARK: - Internal
 
-    static func configure(dependencies: Dependencies, observeLifecycle: Bool) {
+    /// `makeDependencies` runs in the detached utility task, never on the caller's thread.
+    static func configure(observeLifecycle: Bool,
+                          makeDependencies: @escaping @Sendable () -> Dependencies) {
         let (stream, continuation) = AsyncStream.makeStream(of: Command.self)
         let installed = channel.withLock { current -> Bool in
             guard current == nil else { return false }
@@ -47,7 +52,7 @@ public enum Sonda {
             return
         }
         Task.detached(priority: .utility) {
-            let engine = Engine(deps: dependencies)
+            let engine = Engine(deps: makeDependencies())
             await engine.start()
             for await command in stream {
                 await engine.handle(command)
