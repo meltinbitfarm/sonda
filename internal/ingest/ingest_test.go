@@ -17,6 +17,7 @@ const (
 // event builds a valid event and applies overrides (nil value = delete the field).
 func event(over map[string]any) json.RawMessage {
 	m := map[string]any{
+		"event_id":     "3F2504E0-4F89-11D3-9A0C-0305E82C3301",
 		"name":         "screen.viewed",
 		"ts":           now.UnixMilli() - 1000,
 		"user_id":      uid,
@@ -47,7 +48,7 @@ func TestValidateOK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ev.UserID != strings.ToLower(uid) || ev.SessionID != sid || ev.Props != `{"screen":"home"}` || ev.DeviceModel != "iPhone16,2" {
+	if ev.EventID != "3f2504e0-4f89-11d3-9a0c-0305e82c3301" || ev.UserID != strings.ToLower(uid) || ev.SessionID != sid || ev.Props != `{"screen":"home"}` || ev.DeviceModel != "iPhone16,2" {
 		t.Fatalf("event = %+v", ev)
 	}
 
@@ -86,6 +87,8 @@ func TestValidateRejects(t *testing.T) {
 		{"not object", json.RawMessage(`[1]`), "not a JSON object"},
 		{"null event", json.RawMessage(`null`), "not a JSON object"},
 		{"string event", json.RawMessage(`"x"`), "not a JSON object"},
+		{"missing event_id", event(map[string]any{"event_id": nil}), "event_id: missing"},
+		{"event_id not uuid", event(map[string]any{"event_id": "1"}), "event_id: must be a UUID"},
 		{"missing name", event(map[string]any{"name": nil}), "name: missing"},
 		{"name wrong type", event(map[string]any{"name": 5}), "name: wrong type"},
 		{"name too long", event(map[string]any{"name": "a." + strings.Repeat("b", 63)}), "name: longer"},

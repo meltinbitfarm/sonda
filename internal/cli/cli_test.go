@@ -185,7 +185,7 @@ func TestServeIngestEndToEnd(t *testing.T) {
 
 	post := func() *http.Response {
 		ts := time.Now().UnixMilli()
-		body := fmt.Sprintf(`{"events":[{"name":"app.first_launch","ts":%d,"user_id":"0f8fad5b-d9cb-469f-a165-70867728950e","session_id":"7c9e6679-7425-40de-944b-e07fc1f90ae7"}]}`, ts)
+		body := fmt.Sprintf(`{"events":[{"event_id":"3f2504e0-4f89-11d3-9a0c-0305e82c3301","name":"app.first_launch","ts":%d,"user_id":"0f8fad5b-d9cb-469f-a165-70867728950e","session_id":"7c9e6679-7425-40de-944b-e07fc1f90ae7"}]}`, ts)
 		req, _ := http.NewRequest("POST", "http://"+addr+"/v1/events", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+key)
 		req.Header.Set("Content-Type", "application/json")

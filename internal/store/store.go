@@ -205,6 +205,7 @@ func (s *Store) ListApps(ctx context.Context) ([]App, error) {
 // set by the server, never by the client. Empty optional strings are stored
 // as NULL. Props must be a valid JSON object.
 type Event struct {
+	EventID     string // client-generated UUID, unique per app
 	Name        string
 	TS          int64 // device time, ms since epoch
 	UserID      string
@@ -221,14 +222,16 @@ type Event struct {
 }
 
 // InsertEvents stores events for appID in a single transaction: either all
-// rows are written or none.
-func (s *Store) InsertEvents(ctx context.Context, appID int64, receivedAt time.Time, events []Event) (err error) {
+// rows are written or none. An event whose (app_id, event_id) already exists,
+// in the database or earlier in the same batch, is skipped (a retried
+// delivery); duplicates is how many were skipped.
+func (s *Store) InsertEvents(ctx context.Context, appID int64, receivedAt time.Time, events []Event) (duplicates int, err error) {
 	if len(events) == 0 {
-		return nil
+		return 0, nil
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer func() {
 		if err != nil {
@@ -236,11 +239,12 @@ func (s *Store) InsertEvents(ctx context.Context, appID int64, receivedAt time.T
 		}
 	}()
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO events
-		(app_id, name, ts, received_at, user_id, session_id, app_version, build, os_version,
+		(app_id, event_id, name, ts, received_at, user_id, session_id, app_version, build, os_version,
 		 locale, region, storefront, device_model, device_type, props)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (app_id, event_id) DO NOTHING`)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer stmt.Close()
 	recv := receivedAt.UnixMilli()
@@ -249,14 +253,25 @@ func (s *Store) InsertEvents(ctx context.Context, appID int64, receivedAt time.T
 		if props == "" {
 			props = "{}"
 		}
-		if _, err = stmt.ExecContext(ctx, appID, e.Name, e.TS, recv, e.UserID, e.SessionID,
+		if e.EventID == "" {
+			return 0, errors.New("event without event_id")
+		}
+		res, err := stmt.ExecContext(ctx, appID, e.EventID, e.Name, e.TS, recv, e.UserID, e.SessionID,
 			nullIfEmpty(e.AppVersion), nullIfEmpty(e.Build), nullIfEmpty(e.OSVersion),
 			nullIfEmpty(e.Locale), nullIfEmpty(e.Region), nullIfEmpty(e.Storefront),
-			nullIfEmpty(e.DeviceModel), nullIfEmpty(e.DeviceType), props); err != nil {
-			return err
+			nullIfEmpty(e.DeviceModel), nullIfEmpty(e.DeviceType), props)
+		if err != nil {
+			return 0, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		if n == 0 {
+			duplicates++
 		}
 	}
-	return tx.Commit()
+	return duplicates, tx.Commit()
 }
 
 func nullIfEmpty(s string) any {

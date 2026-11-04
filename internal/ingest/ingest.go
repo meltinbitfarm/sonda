@@ -50,6 +50,7 @@ type Batch struct {
 // required field from a zero value. Unknown fields are ignored (a newer SDK
 // may send fields this server does not know yet).
 type wireEvent struct {
+	EventID     *string         `json:"event_id"`
 	Name        *string         `json:"name"`
 	TS          *int64          `json:"ts"`
 	UserID      *string         `json:"user_id"`
@@ -79,6 +80,11 @@ func Validate(raw json.RawMessage, now time.Time) (store.Event, error) {
 	}
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return store.Event{}, errors.New("event is not a JSON object")
+	}
+
+	eventID, err := uuidField("event_id", w.EventID)
+	if err != nil {
+		return store.Event{}, err
 	}
 
 	switch {
@@ -111,6 +117,7 @@ func Validate(raw json.RawMessage, now time.Time) (store.Event, error) {
 	}
 
 	ev := store.Event{
+		EventID:     eventID,
 		Name:        *w.Name,
 		TS:          *w.TS,
 		UserID:      userID,

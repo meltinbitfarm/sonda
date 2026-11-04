@@ -49,7 +49,7 @@ func TestMigrations(t *testing.T) {
 	}
 
 	// Expected indexes exist.
-	for _, idx := range []string{"events_app_name_ts", "events_app_user_ts", "events_app_session_ts"} {
+	for _, idx := range []string{"events_app_name_ts", "events_app_user_ts", "events_app_session_ts", "events_app_event_id"} {
 		var n int
 		s.DB.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?", idx).Scan(&n)
 		if n != 1 {
@@ -161,11 +161,11 @@ func TestInsertEvents(t *testing.T) {
 	}
 	recv := time.UnixMilli(1_800_000_000_000)
 	evs := []Event{
-		{Name: "app.first_launch", TS: 1, UserID: "u", SessionID: "s", DeviceType: "phone"},
-		{Name: "screen.viewed", TS: 2, UserID: "u", SessionID: "s", Props: `{"screen":"home"}`},
+		{EventID: "e1", Name: "app.first_launch", TS: 1, UserID: "u", SessionID: "s", DeviceType: "phone"},
+		{EventID: "e2", Name: "screen.viewed", TS: 2, UserID: "u", SessionID: "s", Props: `{"screen":"home"}`},
 	}
-	if err := s.InsertEvents(ctx, app.ID, recv, evs); err != nil {
-		t.Fatal(err)
+	if dup, err := s.InsertEvents(ctx, app.ID, recv, evs); err != nil || dup != 0 {
+		t.Fatal(dup, err)
 	}
 	var n int
 	var props string
@@ -181,12 +181,30 @@ func TestInsertEvents(t *testing.T) {
 	}
 
 	// One bad row rolls back the whole batch.
-	bad := []Event{{Name: "x.y", TS: 3, UserID: "u", SessionID: "s"}, {Name: "x.y", TS: 4, UserID: "u", SessionID: "s", Props: "nope"}}
-	if err := s.InsertEvents(ctx, app.ID, recv, bad); err == nil {
+	bad := []Event{{EventID: "e3", Name: "x.y", TS: 3, UserID: "u", SessionID: "s"}, {EventID: "e4", Name: "x.y", TS: 4, UserID: "u", SessionID: "s", Props: "nope"}}
+	if _, err := s.InsertEvents(ctx, app.ID, recv, bad); err == nil {
 		t.Fatal("expected error")
+	}
+	if _, err := s.InsertEvents(ctx, app.ID, recv, []Event{{Name: "x.y", TS: 3, UserID: "u", SessionID: "s"}}); err == nil {
+		t.Fatal("event without event_id accepted")
 	}
 	s.DB.QueryRowContext(ctx, "SELECT count(*) FROM events").Scan(&n)
 	if n != 2 {
 		t.Fatalf("partial insert: %d rows", n)
+	}
+
+	// Retried delivery: already stored ids and repeats inside the batch are
+	// skipped and counted; the same id in another app is a different event.
+	retry := []Event{evs[0], {EventID: "e5", Name: "x.y", TS: 5, UserID: "u", SessionID: "s"}, {EventID: "e5", Name: "x.y", TS: 5, UserID: "u", SessionID: "s"}}
+	if dup, err := s.InsertEvents(ctx, app.ID, recv, retry); err != nil || dup != 2 {
+		t.Fatalf("retry: dup=%d err=%v", dup, err)
+	}
+	other, _ := s.CreateApp(ctx, "b", "h2", time.Now())
+	if dup, err := s.InsertEvents(ctx, other.ID, recv, evs[:1]); err != nil || dup != 0 {
+		t.Fatalf("other app: dup=%d err=%v", dup, err)
+	}
+	s.DB.QueryRowContext(ctx, "SELECT count(*) FROM events").Scan(&n)
+	if n != 4 {
+		t.Fatalf("rows after retry = %d, want 4", n)
 	}
 }

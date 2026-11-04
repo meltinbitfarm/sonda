@@ -23,11 +23,14 @@ type Rejection struct {
 	Reason string `json:"reason"`
 }
 
-// IngestResponse is the 200 body of POST /v1/events.
+// IngestResponse is the 200 body of POST /v1/events. Accepted includes
+// Duplicates: events already stored under the same event_id (a retry), which
+// the SDK can drop from its queue like any accepted event.
 type IngestResponse struct {
-	Accepted int         `json:"accepted"`
-	Rejected int         `json:"rejected"`
-	Errors   []Rejection `json:"errors,omitempty"`
+	Accepted   int         `json:"accepted"`
+	Duplicates int         `json:"duplicates"`
+	Rejected   int         `json:"rejected"`
+	Errors     []Rejection `json:"errors,omitempty"`
 }
 
 // ingest handles POST /v1/events. Order: auth (401), rate limit (429),
@@ -95,13 +98,14 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 		}
 		accepted = append(accepted, ev)
 	}
-	if err := s.st.InsertEvents(r.Context(), app.ID, now, accepted); err != nil {
+	dup, err := s.st.InsertEvents(r.Context(), app.ID, now, accepted)
+	if err != nil {
 		s.cfg.Logger.Error("ingest: insert failed", "app_id", app.ID, "events", len(accepted), "err", err)
 		jsonError(w, http.StatusInternalServerError, "could not store events, retry later")
 		return
 	}
-	resp.Accepted, resp.Rejected = len(accepted), len(resp.Errors)
-	s.cfg.Logger.Info("ingest", "app_id", app.ID, "accepted", resp.Accepted, "rejected", resp.Rejected)
+	resp.Accepted, resp.Duplicates, resp.Rejected = len(accepted), dup, len(resp.Errors)
+	s.cfg.Logger.Info("ingest", "app_id", app.ID, "accepted", resp.Accepted, "duplicates", resp.Duplicates, "rejected", resp.Rejected)
 	writeJSON(w, http.StatusOK, resp)
 }
 

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -76,8 +77,12 @@ func (e *env) createApp(name string) (string, int64) {
 	return key, app.ID
 }
 
+var evSeq atomic.Int64
+
+// ev builds a valid event with a fresh event_id; over are key/value overrides.
 func ev(name string, over ...any) map[string]any {
 	m := map[string]any{
+		"event_id":    fmt.Sprintf("00000000-0000-4000-8000-%012d", evSeq.Add(1)),
 		"name":        name,
 		"ts":          testNow.UnixMilli() - 5000,
 		"user_id":     "0f8fad5b-d9cb-469f-a165-70867728950e",
@@ -199,6 +204,33 @@ func TestIngestPartialBatch(t *testing.T) {
 	}
 }
 
+func TestIngestDuplicates(t *testing.T) {
+	e := newEnv(t, Config{})
+	a, b := ev("app.session_started"), ev("screen.viewed")
+	if r := decode(t, e.post(e.key, batchBody(a, b))); r.Accepted != 2 || r.Duplicates != 0 {
+		t.Fatalf("first delivery: %+v", r)
+	}
+	// Retry of the same batch plus one new event and an in-batch repeat.
+	c := ev("feature.used")
+	upper := ev("feature.used", "event_id", strings.ToUpper(c["event_id"].(string)))
+	rec := e.post(e.key, batchBody(a, b, c, upper))
+	r := decode(t, rec)
+	if rec.Code != 200 || r.Accepted != 4 || r.Duplicates != 3 || r.Rejected != 0 {
+		t.Fatalf("retry: %d %+v", rec.Code, r)
+	}
+	if n := e.count("1"); n != 3 {
+		t.Fatalf("stored %d, want 3", n)
+	}
+	// The same event_id from another app is not a duplicate.
+	other, _ := e.createApp("Other")
+	if r := decode(t, e.post(other, batchBody(a))); r.Duplicates != 0 || r.Accepted != 1 {
+		t.Fatalf("other app: %+v", r)
+	}
+	if !strings.Contains(rec.Body.String(), `"duplicates":3`) {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
 func TestIngestBadRequests(t *testing.T) {
 	e := newEnv(t, Config{})
 	good := batchBody(ev("app.first_launch"))
@@ -291,13 +323,13 @@ func TestIngestLimits(t *testing.T) {
 
 func TestIngestRateLimit(t *testing.T) {
 	e := newEnv(t, Config{RatePerMinute: 3})
-	body := batchBody(ev("app.session_started"))
+	body := func() []byte { return batchBody(ev("app.session_started")) }
 	for i := 0; i < 3; i++ {
-		if rec := e.post(e.key, body); rec.Code != 200 {
+		if rec := e.post(e.key, body()); rec.Code != 200 {
 			t.Fatalf("request %d: %d", i, rec.Code)
 		}
 	}
-	rec := e.post(e.key, body)
+	rec := e.post(e.key, body())
 	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "20" {
 		t.Fatalf("4th: %d Retry-After=%q", rec.Code, rec.Header().Get("Retry-After"))
 	}
@@ -306,16 +338,16 @@ func TestIngestRateLimit(t *testing.T) {
 		t.Fatalf("stored %d", n)
 	}
 	other, _ := e.createApp("Other")
-	if rec := e.post(other, body); rec.Code != 200 {
+	if rec := e.post(other, body()); rec.Code != 200 {
 		t.Fatalf("other key: %d", rec.Code)
 	}
 	// Invalid keys get 401, not 429, and do not consume tokens.
-	if rec := e.post("sk_nope", body); rec.Code != 401 {
+	if rec := e.post("sk_nope", body()); rec.Code != 401 {
 		t.Fatalf("bad key while limited: %d", rec.Code)
 	}
 
 	*e.clock = e.clock.Add(20 * time.Second)
-	if rec := e.post(e.key, body); rec.Code != 200 {
+	if rec := e.post(e.key, body()); rec.Code != 200 {
 		t.Fatalf("after refill: %d", rec.Code)
 	}
 }
