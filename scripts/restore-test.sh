@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Local restore test (O5): the real docker-compose.yml with MinIO in place of R2.
 #
-#   1. build and start the stack (restore finds no replica, app creates an empty DB)
+#   1. build and start the stack (restore finds no replica, app creates an empty DB);
+#      check every service runs read-only, without capabilities, with memory/pids limits
 #   2. create an app from inside the container, ingest events with curl
 #   3. wait until Litestream has replicated them to MinIO
 #   4. docker compose down -v: Sonda's data volume is deleted (MinIO's is external, kept)
@@ -143,6 +144,17 @@ $DC up -d
 wait_healthy
 [[ "$($DC ps -a --format '{{.State}} {{.ExitCode}}' restore)" == "exited 0" ]] || fail "restore did not exit 0"
 echo "version: $($DC exec -T app /sonda version)"
+
+step "limits and hardening in effect (O6 M2, S3)"
+for svc in restore app litestream; do
+	id=$($DC ps -a -q "$svc")
+	[[ -n "$id" ]] || fail "no container for $svc"
+	read -r ro caps nnp mem swap pids < <(docker inspect -f \
+		'{{.HostConfig.ReadonlyRootfs}} {{join .HostConfig.CapDrop ","}} {{join .HostConfig.SecurityOpt ","}} {{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.PidsLimit}}' "$id")
+	echo "  $svc: read_only=$ro cap_drop=$caps security_opt=$nnp memory=$mem memswap=$swap pids=$pids"
+	[[ "$ro" == true && "$caps" == ALL && "$nnp" == no-new-privileges:true ]] || fail "$svc not hardened"
+	[[ "$mem" -gt 0 && "$swap" == "$mem" && "$pids" -gt 0 ]] || fail "$svc has no memory/pids limit"
+done
 
 step "create app from inside the container (as nonroot, like a Coolify/docker exec)"
 KEY=$($DC exec -T app /sonda app create "$APP_NAME")
