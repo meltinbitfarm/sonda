@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -118,6 +119,30 @@ func TestEventsConstraints(t *testing.T) {
 	}
 	if _, err := s.DB.ExecContext(ctx, ins, app.ID+100, `{}`); err == nil {
 		t.Error("event for unknown app accepted (foreign keys off?)")
+	}
+}
+
+// O6 M1: the read-write pool never grows past MaxWriterConns, whatever the
+// concurrency.
+func TestWriterPoolBounded(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+	var wg sync.WaitGroup
+	for range 64 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// A read that holds its connection for a moment.
+			var n int
+			if err := s.DB.QueryRowContext(ctx, "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < 20000) SELECT count(*) FROM c").Scan(&n); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	st := s.DB.Stats()
+	if st.MaxOpenConnections != MaxWriterConns || st.OpenConnections > MaxWriterConns {
+		t.Fatalf("pool: max %d, open %d; want at most %d", st.MaxOpenConnections, st.OpenConnections, MaxWriterConns)
 	}
 }
 

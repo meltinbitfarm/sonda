@@ -114,7 +114,9 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 func (s *server) authenticate(w http.ResponseWriter, r *http.Request) (store.App, bool) {
 	scheme, key, found := strings.Cut(r.Header.Get("Authorization"), " ")
 	key = strings.TrimSpace(key)
-	if !found || !strings.EqualFold(scheme, "Bearer") || !strings.HasPrefix(key, ingestkey.Prefix) {
+	// Malformed keys never reach SQLite: a flood of junk keys costs no
+	// database connection (O6 M1).
+	if !found || !strings.EqualFold(scheme, "Bearer") || !ingestkey.WellFormed(key) {
 		unauthorized(w)
 		return store.App{}, false
 	}

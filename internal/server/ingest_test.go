@@ -172,6 +172,23 @@ func TestIngestAuth(t *testing.T) {
 	}
 }
 
+// O6 M1: a malformed key is refused before any database work, so a flood of
+// junk keys takes no SQLite connection. With the database closed, a
+// well-formed unknown key reaches the lookup (503) and a malformed one does not (401).
+func TestIngestMalformedKeySkipsDatabase(t *testing.T) {
+	e := newEnv(t, Config{})
+	body := batchBody(ev("app.first_launch"))
+	e.st.DB.Close()
+	for _, key := range []string{"sk_nope", "sk_" + strings.Repeat("A", 42), "sk_" + strings.Repeat("+", 43), strings.Repeat("x", 4096)} {
+		if rec := e.post(key, body); rec.Code != http.StatusUnauthorized {
+			t.Errorf("malformed %.20q: %d %q", key, rec.Code, rec.Body.String())
+		}
+	}
+	if rec := e.post("sk_"+strings.Repeat("A", 43), body); rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("well-formed unknown key with closed db: %d (lookup not attempted?)", rec.Code)
+	}
+}
+
 func TestIngestPartialBatch(t *testing.T) {
 	e := newEnv(t, Config{})
 	rec := e.post(e.key, batchBody(

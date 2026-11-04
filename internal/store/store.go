@@ -28,6 +28,9 @@ var ErrNotFound = errors.New("not found")
 // ErrDuplicate is returned when a unique constraint is violated.
 var ErrDuplicate = errors.New("already exists")
 
+// MaxWriterConns bounds the read-write pool opened by Open.
+const MaxWriterConns = 8
+
 // Store wraps the database handle.
 type Store struct {
 	DB *sql.DB
@@ -59,6 +62,11 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Bounded pool (O6 M1): every pooled connection is a full SQLite handle
+	// with its own page cache, so concurrency must not decide how many exist.
+	// Writes serialise on SQLite's lock anyway; WAL lets the reads go on.
+	db.SetMaxOpenConns(MaxWriterConns)
+	db.SetMaxIdleConns(MaxWriterConns)
 	s := &Store{DB: db}
 	if err := s.migrate(ctx); err != nil {
 		db.Close()
