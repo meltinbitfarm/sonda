@@ -158,6 +158,7 @@ func serve(ctx context.Context, addr, dbPath, mcpToken string, cfg server.Config
 	if err != nil {
 		return err
 	}
+	ln = newLimitListener(ln, MaxConns)
 	srv := &http.Server{
 		Handler:           server.New(st, cfg),
 		ReadHeaderTimeout: 5 * time.Second,
