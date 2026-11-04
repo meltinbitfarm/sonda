@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -34,6 +35,9 @@ const usage = `usage:
 environment:
   SONDA_ADDR      listen address (default :8080)
   SONDA_DB_PATH   SQLite database path (default /data/sonda.db)
+  SONDA_INGEST_RATE_PER_MIN    requests per minute per ingest key (default 60)
+  SONDA_INGEST_MAX_BATCH       events per request (default 100)
+  SONDA_INGEST_MAX_BODY_BYTES  request body size, also after gzip (default 262144)
 `
 
 // onListen, if set, is called with the bound address once serve is listening (tests).
@@ -52,7 +56,10 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	var err error
 	switch {
 	case len(args) == 1 && args[0] == "serve":
-		err = serve(ctx, env("SONDA_ADDR", DefaultAddr), dbPath, stderr)
+		var cfg server.Config
+		if cfg, err = serverConfig(getenv); err == nil {
+			err = serve(ctx, env("SONDA_ADDR", DefaultAddr), dbPath, cfg, stderr)
+		}
 	case len(args) == 3 && args[0] == "app" && args[1] == "create":
 		err = appCreate(ctx, dbPath, args[2], stdout, stderr)
 	case len(args) == 2 && args[0] == "app" && args[1] == "list":
@@ -71,8 +78,38 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	return 0
 }
 
-func serve(ctx context.Context, addr, dbPath string, stderr io.Writer) error {
-	log := slog.New(slog.NewTextHandler(stderr, nil))
+// serverConfig reads the ingest limits (A2) from the environment. Unset
+// variables keep the defaults; set ones must be positive integers.
+func serverConfig(getenv func(string) string) (server.Config, error) {
+	cfg := server.Config{
+		RatePerMinute: server.DefaultRatePerMinute,
+		MaxBatch:      server.DefaultMaxBatch,
+		MaxBodyBytes:  server.DefaultMaxBodyBytes,
+	}
+	for _, v := range []struct {
+		name string
+		dst  func(int64)
+	}{
+		{"SONDA_INGEST_RATE_PER_MIN", func(n int64) { cfg.RatePerMinute = int(n) }},
+		{"SONDA_INGEST_MAX_BATCH", func(n int64) { cfg.MaxBatch = int(n) }},
+		{"SONDA_INGEST_MAX_BODY_BYTES", func(n int64) { cfg.MaxBodyBytes = n }},
+	} {
+		s := getenv(v.name)
+		if s == "" {
+			continue
+		}
+		n, err := strconv.ParseInt(s, 10, 32)
+		if err != nil || n <= 0 {
+			return server.Config{}, fmt.Errorf("%s must be a positive integer, got %q", v.name, s)
+		}
+		v.dst(n)
+	}
+	return cfg, nil
+}
+
+func serve(ctx context.Context, addr, dbPath string, cfg server.Config, stderr io.Writer) error {
+	log := server.NewLogger(stderr)
+	cfg.Logger = log
 	st, err := store.Open(ctx, dbPath)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
@@ -84,7 +121,7 @@ func serve(ctx context.Context, addr, dbPath string, stderr io.Writer) error {
 		return err
 	}
 	srv := &http.Server{
-		Handler:           server.New(st),
+		Handler:           server.New(st, cfg),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -92,7 +129,8 @@ func serve(ctx context.Context, addr, dbPath string, stderr io.Writer) error {
 		MaxHeaderBytes:    16 << 10,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
-	log.Info("listening", "addr", ln.Addr().String(), "db", dbPath)
+	log.Info("listening", "addr", ln.Addr().String(), "db", dbPath,
+		"rate_per_min", cfg.RatePerMinute, "max_batch", cfg.MaxBatch, "max_body_bytes", cfg.MaxBodyBytes)
 	if onListen != nil {
 		onListen(ln.Addr().String())
 	}

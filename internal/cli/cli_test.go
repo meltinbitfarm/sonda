@@ -3,10 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -115,5 +117,103 @@ func TestServe(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("serve did not shut down")
+	}
+}
+
+func TestServerConfigFromEnv(t *testing.T) {
+	cfg, err := serverConfig(envFor(nil))
+	if err != nil || cfg.RatePerMinute != 60 || cfg.MaxBatch != 100 || cfg.MaxBodyBytes != 256<<10 {
+		t.Fatalf("defaults: %+v %v", cfg, err)
+	}
+	cfg, err = serverConfig(envFor(map[string]string{
+		"SONDA_INGEST_RATE_PER_MIN": "120", "SONDA_INGEST_MAX_BATCH": "50", "SONDA_INGEST_MAX_BODY_BYTES": "1024",
+	}))
+	if err != nil || cfg.RatePerMinute != 120 || cfg.MaxBatch != 50 || cfg.MaxBodyBytes != 1024 {
+		t.Fatalf("custom: %+v %v", cfg, err)
+	}
+	for _, bad := range []string{"0", "-1", "abc", "1.5", "99999999999"} {
+		if _, err := serverConfig(envFor(map[string]string{"SONDA_INGEST_MAX_BATCH": bad})); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	if code, _, errOut := run(t, map[string]string{"SONDA_INGEST_RATE_PER_MIN": "x"}, "serve"); code != 1 || !strings.Contains(errOut, "SONDA_INGEST_RATE_PER_MIN") {
+		t.Fatalf("serve with bad env: %d %q", code, errOut)
+	}
+}
+
+type lockedBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// End to end over a real socket: the client address is 127.0.0.1 and must
+// not appear in the logs (D9).
+func TestServeIngestEndToEnd(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "sonda.db")
+	_, out, _ := run(t, map[string]string{"SONDA_DB_PATH": db}, "app", "create", "Demo")
+	key := strings.TrimSpace(out)
+
+	addrc := make(chan string, 1)
+	onListen = func(a string) { addrc <- a }
+	t.Cleanup(func() { onListen = nil })
+	logs := &lockedBuf{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() {
+		done <- Run(ctx, []string{"serve"}, envFor(map[string]string{
+			"SONDA_DB_PATH": db, "SONDA_ADDR": "127.0.0.1:0", "SONDA_INGEST_RATE_PER_MIN": "1",
+		}), io.Discard, logs)
+	}()
+	var addr string
+	select {
+	case addr = <-addrc:
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not start")
+	}
+
+	post := func() *http.Response {
+		ts := time.Now().UnixMilli()
+		body := fmt.Sprintf(`{"events":[{"name":"app.first_launch","ts":%d,"user_id":"0f8fad5b-d9cb-469f-a165-70867728950e","session_id":"7c9e6679-7425-40de-944b-e07fc1f90ae7"}]}`, ts)
+		req, _ := http.NewRequest("POST", "http://"+addr+"/v1/events", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-For", "198.51.100.23")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp
+	}
+	if resp := post(); resp.StatusCode != 200 {
+		t.Fatalf("ingest: %d", resp.StatusCode)
+	}
+	if resp := post(); resp.StatusCode != 429 || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("rate limit from env: %d", resp.StatusCode)
+	}
+
+	cancel()
+	<-done
+	l := logs.String()
+	if !strings.Contains(l, "accepted=1") {
+		t.Fatalf("no ingest log line:\n%s", l)
+	}
+	for _, ip := range []string{"127.0.0.1", "198.51.100.23"} {
+		if strings.Contains(l, ip) {
+			t.Errorf("%s in logs:\n%s", ip, l)
+		}
 	}
 }
