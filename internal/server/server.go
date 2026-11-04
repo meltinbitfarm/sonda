@@ -24,6 +24,10 @@ const (
 	DefaultRatePerMinute = 60
 	DefaultMaxBatch      = 100
 	DefaultMaxBodyBytes  = 256 << 10
+	// DefaultDailyQuota is the number of events one app may store per UTC
+	// day (O6 S1). Four small apps send far less; it bounds the disk and R2
+	// growth a leaked ingest key can cause.
+	DefaultDailyQuota = 50_000
 )
 
 // Config holds the server settings. Zero fields take the defaults.
@@ -32,6 +36,7 @@ type Config struct {
 	RatePerMinute int              // requests per minute per ingest key
 	MaxBatch      int              // events per request
 	MaxBodyBytes  int64            // request body, after gzip decompression too
+	DailyQuota    int              // events stored per app per UTC day
 	Now           func() time.Time // clock, for tests
 	MCP           http.Handler     // mounted at /mcp/sonda if set (mcpserver.New, already authenticated)
 }
@@ -49,6 +54,9 @@ func (c *Config) defaults() {
 	if c.MaxBodyBytes <= 0 {
 		c.MaxBodyBytes = DefaultMaxBodyBytes
 	}
+	if c.DailyQuota <= 0 {
+		c.DailyQuota = DefaultDailyQuota
+	}
 	if c.Now == nil {
 		c.Now = time.Now
 	}
@@ -58,12 +66,15 @@ type server struct {
 	st      *store.Store
 	cfg     Config
 	limiter *ratelimit.Limiter
+	quota   *ratelimit.DailyQuota
 }
 
 // New returns the HTTP handler.
 func New(st *store.Store, cfg Config) http.Handler {
 	cfg.defaults()
-	s := &server{st: st, cfg: cfg, limiter: ratelimit.New(cfg.RatePerMinute, cfg.Now)}
+	s := &server{st: st, cfg: cfg,
+		limiter: ratelimit.New(cfg.RatePerMinute, cfg.Now),
+		quota:   ratelimit.NewDailyQuota(cfg.DailyQuota, cfg.Now)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("POST /v1/events", s.ingest)

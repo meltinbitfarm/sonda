@@ -47,6 +47,7 @@ environment:
   SONDA_INGEST_RATE_PER_MIN    requests per minute per ingest key (default 60)
   SONDA_INGEST_MAX_BATCH       events per request (default 100)
   SONDA_INGEST_MAX_BODY_BYTES  request body size, also after gzip (default 262144)
+  SONDA_INGEST_DAILY_QUOTA     events stored per app per UTC day (default 50000)
 `
 
 // Version is set at build time with
@@ -105,6 +106,7 @@ func serverConfig(getenv func(string) string) (server.Config, error) {
 		RatePerMinute: server.DefaultRatePerMinute,
 		MaxBatch:      server.DefaultMaxBatch,
 		MaxBodyBytes:  server.DefaultMaxBodyBytes,
+		DailyQuota:    server.DefaultDailyQuota,
 	}
 	for _, v := range []struct {
 		name string
@@ -113,6 +115,7 @@ func serverConfig(getenv func(string) string) (server.Config, error) {
 		{"SONDA_INGEST_RATE_PER_MIN", func(n int64) { cfg.RatePerMinute = int(n) }},
 		{"SONDA_INGEST_MAX_BATCH", func(n int64) { cfg.MaxBatch = int(n) }},
 		{"SONDA_INGEST_MAX_BODY_BYTES", func(n int64) { cfg.MaxBodyBytes = n }},
+		{"SONDA_INGEST_DAILY_QUOTA", func(n int64) { cfg.DailyQuota = int(n) }},
 	} {
 		s := getenv(v.name)
 		if s == "" {
@@ -166,6 +169,7 @@ func serve(ctx context.Context, addr, dbPath, mcpToken string, cfg server.Config
 	}
 	log.Info("listening", "version", Version, "addr", ln.Addr().String(), "db", dbPath,
 		"rate_per_min", cfg.RatePerMinute, "max_batch", cfg.MaxBatch, "max_body_bytes", cfg.MaxBodyBytes,
+		"daily_quota", cfg.DailyQuota,
 		"mcp", mcpserver.Path)
 	if onListen != nil {
 		onListen(ln.Addr().String())

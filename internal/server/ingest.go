@@ -33,14 +33,22 @@ type IngestResponse struct {
 	Errors     []Rejection `json:"errors,omitempty"`
 }
 
-// ingest handles POST /v1/events. Order: auth (401), rate limit (429),
-// headers (415), body size and decoding (413/400), per-event validation,
+// ingest handles POST /v1/events. Order: auth (401), daily quota (429),
+// rate limit (429), headers (415), body size and decoding (413/400), per-event validation,
 // one transaction for the accepted events. See notes/ingest-contract.md.
 func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 
 	app, ok := s.authenticate(w, r)
 	if !ok {
+		return
+	}
+
+	// The quota is checked before the batch and counted after it, so the
+	// last accepted batch of the day may overshoot it by up to MaxBatch.
+	if over, wait := s.quota.Exceeded(app.ID); over {
+		w.Header().Set("Retry-After", strconv.Itoa(ratelimit.RetryAfterSeconds(wait)))
+		jsonError(w, http.StatusTooManyRequests, "daily event quota exceeded, retry after midnight UTC")
 		return
 	}
 
@@ -103,6 +111,9 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 		s.cfg.Logger.Error("ingest: insert failed", "app_id", app.ID, "events", len(accepted), "err", err)
 		jsonError(w, http.StatusInternalServerError, "could not store events, retry later")
 		return
+	}
+	if s.quota.Add(app.ID, len(accepted)-dup) {
+		s.cfg.Logger.Warn("ingest: daily quota reached, refusing until midnight UTC", "app_id", app.ID, "quota", s.cfg.DailyQuota)
 	}
 	resp.Accepted, resp.Duplicates, resp.Rejected = len(accepted), dup, len(resp.Errors)
 	s.cfg.Logger.Info("ingest", "app_id", app.ID, "accepted", resp.Accepted, "duplicates", resp.Duplicates, "rejected", resp.Rejected)

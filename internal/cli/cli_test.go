@@ -261,18 +261,22 @@ func TestServeRequiresMCPToken(t *testing.T) {
 
 func TestServerConfigFromEnv(t *testing.T) {
 	cfg, err := serverConfig(envFor(nil))
-	if err != nil || cfg.RatePerMinute != 60 || cfg.MaxBatch != 100 || cfg.MaxBodyBytes != 256<<10 {
+	if err != nil || cfg.RatePerMinute != 60 || cfg.MaxBatch != 100 || cfg.MaxBodyBytes != 256<<10 || cfg.DailyQuota != 50_000 {
 		t.Fatalf("defaults: %+v %v", cfg, err)
 	}
 	cfg, err = serverConfig(envFor(map[string]string{
 		"SONDA_INGEST_RATE_PER_MIN": "120", "SONDA_INGEST_MAX_BATCH": "50", "SONDA_INGEST_MAX_BODY_BYTES": "1024",
+		"SONDA_INGEST_DAILY_QUOTA": "7",
 	}))
-	if err != nil || cfg.RatePerMinute != 120 || cfg.MaxBatch != 50 || cfg.MaxBodyBytes != 1024 {
+	if err != nil || cfg.RatePerMinute != 120 || cfg.MaxBatch != 50 || cfg.MaxBodyBytes != 1024 || cfg.DailyQuota != 7 {
 		t.Fatalf("custom: %+v %v", cfg, err)
 	}
 	for _, bad := range []string{"0", "-1", "abc", "1.5", "99999999999"} {
 		if _, err := serverConfig(envFor(map[string]string{"SONDA_INGEST_MAX_BATCH": bad})); err == nil {
 			t.Errorf("%q accepted", bad)
+		}
+		if _, err := serverConfig(envFor(map[string]string{"SONDA_INGEST_DAILY_QUOTA": bad})); err == nil {
+			t.Errorf("quota %q accepted", bad)
 		}
 	}
 	if code, _, errOut := run(t, map[string]string{"SONDA_INGEST_RATE_PER_MIN": "x"}, "serve"); code != 1 || !strings.Contains(errOut, "SONDA_INGEST_RATE_PER_MIN") {

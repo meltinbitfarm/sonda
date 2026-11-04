@@ -369,6 +369,50 @@ func TestIngestRateLimit(t *testing.T) {
 	}
 }
 
+// O6 S1: once an app has stored its daily quota of events it gets 429 until
+// midnight UTC; duplicates and rejected events do not count; other apps are
+// not affected.
+func TestIngestDailyQuota(t *testing.T) {
+	e := newEnv(t, Config{DailyQuota: 5})
+	*e.clock = time.Date(2026, 11, 4, 22, 0, 0, 0, time.UTC)
+	ts := e.clock.UnixMilli()
+	three := []map[string]any{ev("a.b", "ts", ts), ev("a.b", "ts", ts), ev("a.b", "ts", ts)}
+	if rec := e.post(e.key, batchBody(three...)); rec.Code != 200 {
+		t.Fatalf("first batch: %d %s", rec.Code, rec.Body)
+	}
+	// Resent batch: duplicates only, nothing stored, quota unchanged.
+	if r := decode(t, e.post(e.key, batchBody(three...))); r.Duplicates != 3 {
+		t.Fatalf("resend: %+v", r)
+	}
+	// One invalid event, one valid: 4 stored so far.
+	if r := decode(t, e.post(e.key, batchBody(ev("Bad Name", "ts", ts), ev("a.b", "ts", ts)))); r.Rejected != 1 {
+		t.Fatalf("mixed: %+v", r)
+	}
+	// Under the quota the whole batch goes in, even if it overshoots.
+	if r := decode(t, e.post(e.key, batchBody(ev("a.b", "ts", ts), ev("a.b", "ts", ts)))); r.Accepted != 2 {
+		t.Fatalf("overshooting batch: %+v", r)
+	}
+	if !strings.Contains(e.logs.String(), "daily quota reached") {
+		t.Error("quota crossing not logged")
+	}
+	rec := e.post(e.key, batchBody(ev("a.b", "ts", ts)))
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "7200" || !strings.Contains(rec.Body.String(), "daily event quota") {
+		t.Fatalf("over quota: %d Retry-After=%q %s", rec.Code, rec.Header().Get("Retry-After"), rec.Body)
+	}
+	if n := e.count("app_id = ?", e.appID); n != 6 {
+		t.Fatalf("stored %d, want 6", n)
+	}
+	other, _ := e.createApp("Other")
+	if rec := e.post(other, batchBody(ev("a.b", "ts", ts))); rec.Code != 200 {
+		t.Fatalf("other app: %d", rec.Code)
+	}
+	// Next UTC day: accepted again.
+	*e.clock = e.clock.Add(2 * time.Hour)
+	if rec := e.post(e.key, batchBody(ev("a.b", "ts", e.clock.UnixMilli()))); rec.Code != 200 {
+		t.Fatalf("after midnight: %d %s", rec.Code, rec.Body)
+	}
+}
+
 // D9: the client address and forwarding headers must not reach the database
 // or the logs, not even through a panic.
 func TestNoIPAnywhere(t *testing.T) {
