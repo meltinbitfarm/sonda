@@ -200,3 +200,68 @@ func (s *Store) ListApps(ctx context.Context) ([]App, error) {
 	}
 	return apps, rows.Err()
 }
+
+// Event is a validated event ready to be stored. App ID and received_at are
+// set by the server, never by the client. Empty optional strings are stored
+// as NULL. Props must be a valid JSON object.
+type Event struct {
+	Name        string
+	TS          int64 // device time, ms since epoch
+	UserID      string
+	SessionID   string
+	AppVersion  string
+	Build       string
+	OSVersion   string
+	Locale      string
+	Region      string
+	Storefront  string
+	DeviceModel string
+	DeviceType  string
+	Props       string
+}
+
+// InsertEvents stores events for appID in a single transaction: either all
+// rows are written or none.
+func (s *Store) InsertEvents(ctx context.Context, appID int64, receivedAt time.Time, events []Event) (err error) {
+	if len(events) == 0 {
+		return nil
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO events
+		(app_id, name, ts, received_at, user_id, session_id, app_version, build, os_version,
+		 locale, region, storefront, device_model, device_type, props)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	recv := receivedAt.UnixMilli()
+	for _, e := range events {
+		props := e.Props
+		if props == "" {
+			props = "{}"
+		}
+		if _, err = stmt.ExecContext(ctx, appID, e.Name, e.TS, recv, e.UserID, e.SessionID,
+			nullIfEmpty(e.AppVersion), nullIfEmpty(e.Build), nullIfEmpty(e.OSVersion),
+			nullIfEmpty(e.Locale), nullIfEmpty(e.Region), nullIfEmpty(e.Storefront),
+			nullIfEmpty(e.DeviceModel), nullIfEmpty(e.DeviceType), props); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}

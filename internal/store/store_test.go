@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -148,5 +149,44 @@ func TestCreateAppAndLookup(t *testing.T) {
 	_, h2 := ingestkey.Generate()
 	if _, err := s.CreateApp(ctx, "Pulso", h2, now); !errors.Is(err, ErrDuplicate) {
 		t.Fatalf("duplicate name: err = %v", err)
+	}
+}
+
+func TestInsertEvents(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t)
+	app, err := s.CreateApp(ctx, "a", "h", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recv := time.UnixMilli(1_800_000_000_000)
+	evs := []Event{
+		{Name: "app.first_launch", TS: 1, UserID: "u", SessionID: "s", DeviceType: "phone"},
+		{Name: "screen.viewed", TS: 2, UserID: "u", SessionID: "s", Props: `{"screen":"home"}`},
+	}
+	if err := s.InsertEvents(ctx, app.ID, recv, evs); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	var props string
+	var build, dt sql.NullString
+	var got int64
+	s.DB.QueryRowContext(ctx, "SELECT count(*) FROM events WHERE app_id = ? AND received_at = ?", app.ID, recv.UnixMilli()).Scan(&n)
+	if n != 2 {
+		t.Fatalf("inserted %d rows, want 2", n)
+	}
+	s.DB.QueryRowContext(ctx, "SELECT props, build, device_type, ts FROM events WHERE name = 'app.first_launch'").Scan(&props, &build, &dt, &got)
+	if props != "{}" || build.Valid || dt.String != "phone" || got != 1 {
+		t.Fatalf("row = %q %v %v %d", props, build, dt, got)
+	}
+
+	// One bad row rolls back the whole batch.
+	bad := []Event{{Name: "x.y", TS: 3, UserID: "u", SessionID: "s"}, {Name: "x.y", TS: 4, UserID: "u", SessionID: "s", Props: "nope"}}
+	if err := s.InsertEvents(ctx, app.ID, recv, bad); err == nil {
+		t.Fatal("expected error")
+	}
+	s.DB.QueryRowContext(ctx, "SELECT count(*) FROM events").Scan(&n)
+	if n != 2 {
+		t.Fatalf("partial insert: %d rows", n)
 	}
 }
