@@ -20,6 +20,9 @@ extension SondaValue: ExpressibleByStringLiteral {
     public init(stringLiteral value: String) { self = .string(value) }
 }
 
+/// `["feature": "export_\(format)"]`
+extension SondaValue: ExpressibleByStringInterpolation {}
+
 extension SondaValue: ExpressibleByIntegerLiteral {
     public init(integerLiteral value: Int) { self = .int(value) }
 }

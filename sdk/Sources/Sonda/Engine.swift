@@ -18,7 +18,8 @@ struct Dependencies: Sendable {
     var locale: @Sendable () -> Locale
 
     var maxQueuedEvents = 2000
-    /// Periodic send while running; nil disables every timer (tests call `flush()` themselves).
+    /// Periodic send while running. nil = manual mode: no timers and no automatic sends,
+    /// only explicit `flush()` calls (tests).
     var flushInterval: Duration? = .seconds(30)
     /// D10: a new session after 30 minutes without activity.
     var sessionTimeout: TimeInterval = 30 * 60
@@ -242,7 +243,9 @@ actor Engine {
 
     // MARK: - Delivery
 
+    /// Automatic send; does nothing in manual mode (`flushInterval == nil`, tests).
     private func triggerFlush() {
+        guard deps.flushInterval != nil else { return }
         Task { await self.flush() }
     }
 
