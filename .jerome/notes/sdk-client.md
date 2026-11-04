@@ -43,35 +43,45 @@ Commands: notes/recipes/sdk-tests.md. Integration guide: sdk/README.md.
    Application Support/<bundle id>/Sonda), directory excluded from backup, iOS file protection
    `completeUntilFirstUserAuthentication` on rewrites. Each line is the exact wire JSON of an event,
    encoded once at creation: retries are byte-identical and keep the same event_id. Append per event,
-   atomic rewrite on removal. Torn last line after a crash is skipped. Cap 2000 events, oldest dropped.
+   atomic rewrite on removal. Torn last line after a crash is skipped. Cap 2000 events: when exceeded,
+   the oldest are dropped down to 1800 (90%) in one rewrite (step 2, S2).
    Events older than 30 days are dropped at launch and before every send.
 10. **Batches:** ≤ 100 events and ≤ 250 KB uncompressed JSON (server limit 256 KB applies after gunzip
     too), always gzip (Foundation raw deflate + own gzip header/CRC-32; checked against /usr/bin/gzip and
     the real Go server).
-11. **Responses** (contract table): 2xx remove batch (accepted, duplicates, rejected alike; rejection
-    reasons logged at debug); 401/403 stop until next launch, keep queue; 413 halve the batch size and
-    retry, a single event that gets 413 is dropped; 429 wait Retry-After (seconds or HTTP date), backoff
-    if missing; 408, 5xx and network errors backoff; other 4xx drop the batch. Backoff: 5 s · 2^(n-1),
+11. **Responses** (contract table): 2xx with a decodable ingest response carrying `accepted` removes the
+    batch (accepted, duplicates, rejected alike; rejection reasons logged at debug), a 2xx with any other
+    body (captive portal, proxy page) is retried; 400 and 415 drop the batch; 401/403 stop until next
+    launch, keep queue; 413 halve the batch size and retry, a single event that gets 413 is dropped; 429
+    wait Retry-After (seconds or HTTP date) capped at 1 h, backoff if missing; every other 4xx (404, 405,
+    409, 410, 422...), 5xx and network errors backoff (step 2, M1/M2/S1). Backoff: 5 s · 2^(n-1),
     cap 10 min, random point in the upper half (equal jitter). Batch size doubles back after a success.
 12. **Triggers:** timer every 30 s while running, foreground, background (inside a UIKit background task
     on iOS; on macOS didBecomeActive/didResignActive), when the queue reaches the batch size, `Sonda.flush()`.
+    One send at a time: the running flush is a stored Task and any other flush call awaits it, so the
+    background task ends only when the request in flight has finished (step 2, M3).
 13. **Client-side validation** mirrors D11/D13: name pattern and ≤ 64, prop keys snake_case ≤ 64, no
     NaN/inf, props ≤ 2048 bytes measured as Go's json.Marshal would store them (`<`, `>`, `&` escaped
-    as 6 bytes). Optional fields cleaned of control characters and cut at 64 bytes. Invalid events are
+    as 6 bytes, control characters in string values counted at 6 bytes too). Optional fields cleaned of control characters and cut at 64 bytes. Invalid events are
     dropped and logged (os.Logger, subsystem `dev.sonda.sdk`).
 14. **Catalog extras:** `purchaseResult(_:productID:)` maps StoreKit 2 results (success verified ->
     completed, userCancelled -> cancelled, pending -> failed{error:"pending"}, unverified ->
     failed{error:"unverified"}); `purchaseFailed` and `errorOccurred` accept an `Error` and send only
     NSError domain/code. `purchase.failed` also carries `product_id` when known (extra prop beyond D12).
 15. Second `configure` call is ignored; `track` before `configure` is dropped with a log line.
+    `configure` builds the live dependencies (queue directory, sysctl, URLSession) inside the detached
+    utility task: the caller only takes a lock and creates a stream and a task (step 2, S5).
+16. **Clock moved backwards:** a gap larger than the session timeout in either direction starts a new
+    session and resets the last activity (step 2, S4).
 
 ## Tests (sdk/Tests/SondaTests)
 - ContractTests: headers, path, gzip magic, body shape `{"events":[...]}`, every field and type, integer
   ms ts, lowercase UUIDs, flat props, no unknown keys; invalid names/props dropped on device; Go-escaping
   size; field cleaning; gzip CRC + round trip; system gunzip (macOS); device type / os version.
 - DeliveryTests: queue survives restart and resends byte-identical events with the same ids; torn line;
-  cap; >30-day events dropped; batches 100/100/50; body ≤ 256 KB with big props; 200 with
-  duplicates/rejections removes; 400/404/415/422 drop; 401 keeps queue, stops, next launch resumes;
+  cap trimmed to 90% in one rewrite; >30-day events dropped; batches 100/100/50; body ≤ 256 KB with big
+  props; 200 with duplicates/rejections removes; 200 without an ingest response retried; 400/415 drop,
+  other 4xx retried; concurrent flushes and background wait for the running send; Retry-After capped; 401 keeps queue, stops, next launch resumes;
   413 split; single 413 dropped; 503 backoff 5/10/20 s and nothing sent before the deadline; network
   error; backoff cap and jitter bounds; 429 Retry-After 120 s; Retry-After parsing (seconds, HTTP date);
   429 without header.
@@ -82,6 +92,24 @@ Commands: notes/recipes/sdk-tests.md. Integration guide: sdk/README.md.
 - PublicAPITests: `Sonda.configure` + every catalog helper + `track` reach the server in call order with
   the right props; second configure ignored.
 - LiveServerTests: optional, real `sonda serve` (recipe).
+
+## Step 2: review fixes (branch `sdk/2-fixes`, 2026-11-04)
+Fixes all items of notes/sdk-review.md except those listed below. Tests: `swift test` 45/45 (live suite
+skipped), `xcodebuild test` iPhone 17 / iOS 26.2 44/44, Release builds iOS, macOS, Catalyst clean.
+New tests: other 4xx kept and retried; 200 with HTML/empty/`{}`/no `accepted` retried (engine and
+`Transport.outcome`); a second flush and the background `done` wait for the running send (both fail on
+the old code); Retry-After 86400 and a far HTTP date capped at 3600; cap trimming (6000 appends at cap
+2000 rewrite at most 25 times, was 4000); clock 2 h backwards opens a new session and the 30-minute rule
+works from the new time; live dependencies built off the main thread; control-character size check.
+PublicAPITests now starts its clock at the real time (the public API stamps `Date()`; with the clock
+rule a day-long gap correctly opened an extra session).
+Not done, with reason:
+- S4 optional `ts` clamp: the clock that is wrong is the same one used for "now", so clamping to it
+  changes nothing; a fix would need the server's `Date` header as reference. Server rejection of such
+  events stays visible only in DEBUG logs.
+- S6: `user_id` stays in UserDefaults (the review calls it acceptable); documented in the README
+  Privacy section instead of moving it to a file excluded from backup.
+- S7(d): the `0.1.0` tag does not exist yet; creating it is the lead's call (shared tags, D17).
 
 ## Open points
 - No version tag yet: the README suggests `from: "0.1.0"`. Tags are shared with the server (D17); the lead
