@@ -291,7 +291,8 @@ func TestMCPEndToEnd(t *testing.T) {
 	}
 
 	l := logs.String()
-	if !strings.Contains(l, "tool=funnel") || !strings.Contains(l, "ok=false") || strings.Contains(l, token) || strings.Contains(l, "onboarding") {
+	if !strings.Contains(l, "tool=funnel") || !strings.Contains(l, "ok=false") || strings.Contains(l, token) ||
+		strings.Contains(l, "onboarding") || strings.Contains(l, "session connected") {
 		t.Errorf("logs:\n%s", l)
 	}
 }

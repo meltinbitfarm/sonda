@@ -46,17 +46,37 @@ func New(db *sql.DB, opts Options) (http.Handler, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
+	// The SDK logs every stateless connect/disconnect at Info: keep only its warnings.
+	sdkLog := slog.New(minLevel{slog.LevelWarn, log.Handler()})
 	svc := &analytics.Service{DB: db, Now: opts.Now, QueryTimeout: opts.QueryTimeout}
 	srv := mcp.NewServer(&mcp.Implementation{Name: "sonda", Title: "Sonda analytics", Version: Version},
-		&mcp.ServerOptions{Instructions: instructions, Logger: log})
+		&mcp.ServerOptions{Instructions: instructions, Logger: sdkLog})
 	register(srv, svc, log)
 
 	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv },
-		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, Logger: log})
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, Logger: sdkLog})
 	// Browsers cannot drive the endpoint cross-site; Claude's clients are
 	// not browsers and send no Origin / Sec-Fetch-Site.
 	protected := http.NewCrossOriginProtection().Handler(h)
 	return RequireToken(opts.Token, protected), nil
+}
+
+// minLevel drops records below level.
+type minLevel struct {
+	level slog.Level
+	slog.Handler
+}
+
+func (m minLevel) Enabled(ctx context.Context, l slog.Level) bool {
+	return l >= m.level && m.Handler.Enabled(ctx, l)
+}
+
+func (m minLevel) WithAttrs(as []slog.Attr) slog.Handler {
+	return minLevel{m.level, m.Handler.WithAttrs(as)}
+}
+
+func (m minLevel) WithGroup(name string) slog.Handler {
+	return minLevel{m.level, m.Handler.WithGroup(name)}
 }
 
 // addTool registers a read-only tool and logs one line per call: tool
