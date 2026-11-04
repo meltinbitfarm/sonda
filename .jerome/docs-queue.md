@@ -1,0 +1,1 @@
+- 2026-11-04 · developer · go.mod, cmd/sonda, internal/{cli,store,server,ingestkey} · Go skeleton: `sonda serve` (GET /healthz, SONDA_ADDR/SONDA_DB_PATH), `sonda app create|list`, SQLite WAL schema apps/events with hashed ingest keys and ms timestamps.
