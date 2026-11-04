@@ -25,12 +25,4 @@
 - none
 
 ## Backlog
-- O1: passo 1 — scheletro Go, CLI `serve`/`app create`, SQLite WAL con tabelle apps/events (D19) — pronto in release/first, test verdi, da unire a main (L1)
-- O2: passo 2 — `POST /v1/events` con ingest key, validazione D13, rate limit A2, niente IP — pronto in release/first, test verdi, da unire a main (L1)
-- O3: passo 3 — MCP con i tool di D14 e autenticazione A4 — pronto in release/first, test verdi, da unire a main (L1)
-- O4: passo 4 — Dockerfile distroless, docker-compose.yml D5/A1, litestream.yml per R2 — pronto in release/first, test verdi, da unire a main (L1)
-- O5: passo 5 — prova di ripristino in locale con MinIO, ricetta in notes/recipes/ — pronto in release/first, test verdi, da unire a main (L1)
-- O6: passo 6 — revisione di sicurezza dell'analyst (D7, D13, tool query) — pronto in release/first, test verdi, da unire a main (L1)
-- O7: comando `sonda app rotate-key` — la ingest key si salva solo come hash e non si può rileggere (A5) — pronto in release/first, test verdi, da unire a main (L1)
-- O8: SDK Swift `Sonda` (area sdk) con revisione e correzioni — pronto in release/first, test verdi (swift test 45, simulatore iOS 44), da unire a main (L1)
-- O9: a Fabio — unire release/first, push, tag 0.1.0, deploy su Coolify (chiude Q1), ripristino vero da R2, collegare Claude, integrare l'SDK nella quarta app (docs/deploy.md, sdk/README.md)
+- O9: a Fabio — push, tag 0.1.0, deploy su Coolify (chiude Q1), ripristino vero da R2, collegare Claude, integrare l'SDK nella quarta app (docs/deploy.md, sdk/README.md)
