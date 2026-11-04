@@ -202,8 +202,10 @@ actor Engine {
 
     /// Starts a new session (and emits app.session_started) if there is none or the last
     /// activity is older than the timeout; then records `date` as the last activity.
+    /// A gap larger than the timeout in either direction ends the session: if the device clock
+    /// moved back by hours, waiting for it to catch up would keep one session open until then.
     private func touchSession(at date: Date) {
-        let expired = lastActivity.map { date.timeIntervalSince($0) > deps.sessionTimeout } ?? true
+        let expired = lastActivity.map { abs(date.timeIntervalSince($0)) > deps.sessionTimeout } ?? true
         if sessionID == nil || expired {
             sessionID = UUID().uuidString.lowercased()
             deps.defaults.set(sessionID, forKey: Keys.sessionID)

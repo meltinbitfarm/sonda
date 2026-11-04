@@ -65,6 +65,29 @@ import Testing
         #expect(Set(ids).count == 2)
     }
 
+    @Test func clockMovedBackwardsStartsSessionAndKeepsCounting() async {
+        let h = Harness()
+        let e = await h.engine()
+        let s1 = await e.sessionID
+
+        // A small step back (out-of-order dates) keeps the session and the last activity.
+        await e.track("feature.used", at: h.clock.now.addingTimeInterval(-60))
+        #expect(await e.sessionID == s1)
+        #expect(await e.lastActivity == h.clock.now)
+
+        // The clock jumps back two hours: a new session, measured from the new time.
+        h.clock.advance(-2 * 3600)
+        await e.track("feature.used", at: h.clock.now)
+        let s2 = await e.sessionID
+        #expect(s2 != s1)
+        #expect(await e.lastActivity == h.clock.now)
+
+        // From there the 30-minute rule works again, without waiting for the old time.
+        h.clock.advance(31 * 60)
+        await e.track("feature.used", at: h.clock.now)
+        #expect(await e.sessionID != s2)
+    }
+
     @Test func foregroundAfterLongBackgroundStartsSession() async {
         let h = Harness()
         let e = await h.engine()
@@ -122,7 +145,9 @@ import Testing
 /// The public API end to end (one test: `Sonda` is process-wide).
 @Suite struct PublicAPITests {
     @Test func catalogHelpersReachTheServerInOrder() async throws {
-        let h = Harness()
+        // The public API stamps events with the real time: the engine clock must agree,
+        // or the gap would look like a clock jump and open a new session.
+        let h = Harness(clock: TestClock(Date()))
         Sonda.configure(dependencies: h.dependencies, observeLifecycle: false)
         Sonda.onboardingStepViewed(step: 1, name: "welcome")
         Sonda.onboardingSkipped(atStep: 2)
