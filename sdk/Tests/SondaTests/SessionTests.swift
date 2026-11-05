@@ -192,6 +192,9 @@ import Testing
         Sonda.purchaseFailed(error: "network", productID: "pro.yearly")
         Sonda.purchaseCompleted(productID: "pro.yearly")
         Sonda.purchaseRestored()
+        Sonda.purchasePending(productID: "pro.yearly")
+        Sonda.purchaseFailed(StoreKitError.networkError(URLError(.timedOut)), productID: "pro.yearly")
+        Sonda.purchaseFailed(StoreKitError.userCancelled, productID: "pro.yearly")
         Sonda.errorOccurred(NSError(domain: "NSURLErrorDomain", code: -1009))
         Sonda.track("feature.used", props: ["feature": "share", "count": 3, "pro": true])
         await Sonda.flushAndWait()
@@ -203,7 +206,8 @@ import Testing
             "onboarding.step_viewed", "onboarding.skipped", "onboarding.completed",
             "screen.viewed", "feature.used", "paywall.shown",
             "purchase.started", "purchase.cancelled", "purchase.failed", "purchase.completed",
-            "purchase.restored", "error.occurred", "feature.used",
+            "purchase.restored", "purchase.pending", "purchase.failed", "purchase.cancelled",
+            "error.occurred", "feature.used",
         ])
         let props = events.map { $0["props"] as? [String: Any] ?? [:] }
         #expect((props[2]["step"] as? NSNumber)?.intValue == 1)
@@ -215,9 +219,16 @@ import Testing
         #expect(props[7]["variant"] as? String == "b")
         #expect(props[8]["product_id"] as? String == "pro.yearly")
         #expect(props[10]["error"] as? String == "network")
-        #expect(props[13]["domain"] as? String == "NSURLErrorDomain")
-        #expect((props[13]["code"] as? NSNumber)?.intValue == -1009)
-        #expect(props[14]["pro"] as? Bool == true)
+        #expect(props[13]["product_id"] as? String == "pro.yearly")
+        #expect(props[13].count == 1)
+        #expect(props[14]["error"] as? String == "networkError")
+        #expect(props[14]["product_id"] as? String == "pro.yearly")
+        #expect(props[14]["underlying_error_domain"] as? String == NSURLErrorDomain)
+        #expect((props[14]["underlying_error_code"] as? NSNumber)?.intValue == URLError.timedOut.rawValue)
+        #expect(props[15].keys.sorted() == ["product_id"])   // userCancelled thrown: cancelled, not failed
+        #expect(props[16]["domain"] as? String == "NSURLErrorDomain")
+        #expect((props[16]["code"] as? NSNumber)?.intValue == -1009)
+        #expect(props[17]["pro"] as? Bool == true)
 
         // A second configure is ignored.
         Sonda.configure(ingestKey: "sk_other", endpoint: URL(string: "https://elsewhere.test")!)

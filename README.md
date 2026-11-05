@@ -75,7 +75,7 @@ Sonda.paywallShown(placement: "onboarding", variant: "b")
 
 Sonda.purchaseStarted(productID: product.id)
 let result = try await product.purchase()
-Sonda.purchaseResult(result, productID: product.id)   // completed, cancelled or failed
+Sonda.purchaseResult(result, productID: product.id)   // completed, cancelled, pending or failed
 ```
 
 If none of those fit, track a custom event:
