@@ -20,4 +20,5 @@
 - D18: team: developer (opus) in main e sdk, analyst (sonnet) in main e sdk, researcher (sonnet) in main, documentarist (haiku) in main e sdk; tutti dal catalogo senza modifiche, con L1 — developer per server Go, Compose e SDK Swift; analyst per revisioni di sicurezza (D7, D13, query di D14) e per Q2; researcher per Q1 e verifiche su Litestream/R2 e MCP; documentarist perché gli altri cambiano codice. Confermato da Fabio.
 - D19: piano del server per la milestone first in 6 passi (scheletro e CLI, ingestione, MCP, Docker/Compose, prova di ripristino locale con MinIO, revisione di sicurezza); deploy di prova su Coolify e ripristino da R2 restano a Fabio — confermato da Fabio
 - D20: L1 cambiata: il lead agent unisce i branch a main quando i test passano senza conflitti; push, tag, deploy restano a Fabio — scelta di Fabio
-- D21: dominio del servizio sonda.meltinbit.com (chiude Q3) — stabile, entra nell'SDK delle app e nel connettore di Claude — scelta di Fabio
+- D21 (superata da D22): dominio del servizio sonda.meltinbit.com (chiude Q3) — stabile, entra nell'SDK delle app e nel connettore di Claude — scelta di Fabio
+- D22: dominio del servizio sonda.meltinbitfarm.cloud, supera D21 — quello reale indicato da Fabio

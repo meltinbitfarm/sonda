@@ -1,7 +1,7 @@
 # Archive
 
 ## Closed
-- Q3: dominio o sottodominio del servizio — done 2026-11-05: sonda.meltinbit.com (D21)
+- Q3: dominio o sottodominio del servizio — done 2026-11-05: sonda.meltinbitfarm.cloud (D22)
 - O1: passo 1 — scheletro Go, CLI `serve`/`app create`, SQLite WAL con tabelle apps/events (D19) — done 2026-11-04: unito a main da release/first, test verdi
 - O2: passo 2 — `POST /v1/events` con ingest key, validazione D13, rate limit A2, niente IP — done 2026-11-04: unito a main da release/first, test verdi
 - O3: passo 3 — MCP con i tool di D14 e autenticazione A4 — done 2026-11-04: unito a main da release/first, test verdi
