@@ -1,28 +1,47 @@
 # Sonda
 
-Self-hosted, lightweight telemetry for Fabio's iOS apps, replacing TelemetryDeck. Apps send events through
-the Swift SDK in this repository; Claude reads them through an MCP server to analyse onboarding, feature
-usage, drop-offs and paywall conversion. There is no web UI.
+**Sonda** is a small, self-hosted analytics service for iOS and macOS apps. Your apps send events through
+a Swift package; you ask questions about them through Claude, using an MCP server. There is no dashboard.
 
-- Server: `https://sonda.meltinbitfarm.cloud` (Go, SQLite, Litestream backup to Cloudflare R2, Docker Compose on Coolify)
-- SDK: Swift Package `Sonda`, this repository's URL, from version `0.1.0`
-- Full SDK reference: [`sdk/README.md`](sdk/README.md) · Deploy and operations: [`docs/deploy.md`](docs/deploy.md)
+It was built to replace TelemetryDeck for a handful of indie apps. The questions it answers are the
+usual ones: where do people drop out of onboarding, which features get used, how well does the
+paywall convert, do people come back after a week?
 
-## Integrating Sonda into an iOS app
+## Why
 
-This section is written for whoever (human or Claude Code) adds Sonda to an app. Read
-[`sdk/README.md`](sdk/README.md) for every detail; the essentials are here.
+- **Tiny to run.** One Go binary and a SQLite file. Litestream streams the database to Cloudflare R2
+  (or any S3-compatible storage) for backup. It runs comfortably next to other things on a small VPS.
+- **No dashboard to build or maintain.** You ask Claude, which uses a few composable MCP tools: counts,
+  funnels, retention and read-only SQL.
+- **Clean production data.** The SDK drops events from Debug builds, the simulator and TestFlight.
+- **Privacy by default.** No IP addresses are stored, there is no IP geolocation and no advertising
+  or vendor identifiers. Users are identified by a random UUID created on the device.
 
-### 1. Add the package
+## How it works
 
-Xcode → File → Add Package Dependencies → `https://github.com/meltinbitfarm/sonda.git`, rule
-"Up to Next Major Version" from `0.1.0`, add the `Sonda` library to the app target. The repository is
-private: Xcode needs a GitHub account with access (Settings → Accounts). SwiftPM builds only
-`sdk/Sources/Sonda`; the Go code in the repository is never compiled into the app.
+```
+iOS app ── Sonda SDK ──▶ POST /v1/events ──▶ sonda (Go) ──▶ SQLite ──▶ Litestream ──▶ R2
+                                                │
+                              Claude ◀── MCP ───┘  /mcp/sonda
+```
 
-Requirements: iOS 17+ / macOS 14+, Xcode 16+, Swift 6. No dependencies, no entitlements.
+- The **SDK** queues events on disk and sends them in gzip batches. It retries when offline and fills
+  in device and app details automatically.
+- The **server** checks each event, removes duplicates and stores it. Each app has its own write-only
+  ingest key.
+- The **MCP endpoint**, protected by a secret token, gives Claude these tools: `list_apps`,
+  `event_counts`, `funnel`, `retention`, `recent_events` and `query` (read-only SQL).
 
-### 2. Configure once, at launch
+## Using the SDK in an app
+
+Requirements: iOS 17 or macOS 14, Xcode 16 or later. No dependencies.
+
+**1. Add the package.** In Xcode choose File → Add Package Dependencies, enter
+`https://github.com/meltinbitfarm/sonda.git`, pick version `0.1.0` or later and add the `Sonda` library
+to your app target. Only the Swift sources in `sdk/` are built: the server code in this repository never
+ends up in your app.
+
+**2. Configure it once, at launch:**
 
 ```swift
 import Sonda
@@ -31,87 +50,91 @@ import Sonda
 struct MyApp: App {
     init() {
         Sonda.configure(
-            ingestKey: "sk_...",   // per-app key, ask Fabio (created with `sonda app create`)
-            endpoint: URL(string: "https://sonda.meltinbitfarm.cloud")!
+            ingestKey: "sk_...",                                  // from `sonda app create`
+            endpoint: URL(string: "https://sonda.example.com")!   // your server
         )
     }
     var body: some Scene { WindowGroup { ContentView() } }
 }
 ```
 
-- The ingest key is write-only and public by design (it ships inside the binary): it may live in source.
-  Each app has its own key; never reuse another app's.
-- Use the `https` URL exactly as above, without a path.
-- Call `configure` before any `track`; events tracked earlier are dropped.
+The SDK records first launch and sessions on its own. A new session starts after 30 minutes of
+inactivity. Each event carries the app version, OS version, locale, region, App Store storefront and
+device model.
 
-Sonda then sends `app.first_launch`, `app.session_started` (new session after 30 min of inactivity) and
-the automatic fields (app version and build, OS version, locale, region, storefront, device model and
-type) by itself. Do not track these manually.
+**3. Track what matters.** A standard set of events keeps every app comparable:
 
-### 3. Instrument with the standard catalog
+```swift
+Sonda.onboardingStepViewed(step: 1, name: "welcome")
+Sonda.onboardingCompleted()
+Sonda.screenViewed("settings")
+Sonda.featureUsed("export_pdf")
+Sonda.paywallShown(placement: "onboarding", variant: "b")
 
-Use the helpers, so every app answers the same funnel queries:
+Sonda.purchaseStarted(productID: product.id)
+let result = try await product.purchase()
+Sonda.purchaseResult(result, productID: product.id)   // completed, cancelled or failed
+```
 
-| Moment | Call |
-|---|---|
-| Each onboarding screen shown | `Sonda.onboardingStepViewed(step: 1, name: "welcome")` (steps numbered from 1, names snake_case and stable) |
-| Onboarding finished / skipped | `Sonda.onboardingCompleted()` / `Sonda.onboardingSkipped(atStep: 3)` |
-| Main screens | `Sonda.screenViewed("settings")` |
-| A meaningful feature used | `Sonda.featureUsed("export_pdf")` |
-| Paywall displayed | `Sonda.paywallShown(placement: "onboarding", variant: "b")` |
-| Purchase flow (StoreKit 2) | `Sonda.purchaseStarted(productID:)`, then `Sonda.purchaseResult(result, productID:)` with the `Product.PurchaseResult`, or `Sonda.purchaseFailed(error, productID:)` in `catch` |
-| Restore purchases succeeded | `Sonda.purchaseRestored()` |
-| Errors worth counting | `Sonda.errorOccurred(error)` (sends domain + code only) |
+If none of those fit, track a custom event:
 
-Custom events only when the catalog has nothing fitting:
-`Sonda.track("export.finished", props: ["format": "pdf", "pages": 12])`.
-Name `area.action_in_past_tense`, snake_case, ≤ 64 characters; props flat (string, number, bool),
-snake_case keys, ≤ 2 KB. Prefer one generic event with a prop over many specific names.
+```swift
+Sonda.track("export.finished", props: ["format": "pdf", "pages": 12])
+```
 
-**Never put personal data in props**: no names, emails, user-typed text, identifiers of the person.
+Event names look like `area.action_in_past_tense`. Props are flat: strings, numbers and booleans only.
+**Never put personal data in props.**
 
-### 4. Migrating from TelemetryDeck
+Only production builds send events. To check your instrumentation, run a Debug build and watch the
+device console (subsystem `dev.sonda.sdk`).
 
-Remove the TelemetryDeck package and its initialisation, then map each signal to the catalog above
-instead of copying names one to one. Typical mapping:
+The full SDK guide covers the event catalogue, delivery and retries, privacy, and moving over from
+TelemetryDeck: [`sdk/README.md`](sdk/README.md).
 
-| TelemetryDeck signal (example) | Sonda |
-|---|---|
-| app launched / session started | nothing: automatic |
-| onboarding page N viewed | `onboardingStepViewed(step:name:)` |
-| screen or view appeared | `screenViewed(_:)` |
-| button or tool used | `featureUsed(_:)` |
-| paywall shown | `paywallShown(placement:variant:)` |
-| purchase success / cancel / error | `purchaseResult(_:productID:)` / `purchaseFailed(_:productID:)` |
+## Running the server
 
-Keep a short list of the events the app sends (name, props, where) in the app's own repository, so
-analyses know what to expect.
+Sonda ships as a Docker Compose stack with three services that share one volume:
 
-### 5. Verify
+- `restore`: on first start, restores the database from the R2 backup if one exists;
+- `app`: the Sonda server;
+- `litestream`: replicates every write to R2.
 
-Events are **dropped on purpose** in Debug builds, in the simulator, in Xcode installs and in TestFlight:
-only production data reaches the server. So:
+Losing the server costs nothing: deploy the same stack anywhere with the same R2 settings and the data
+comes back by itself.
 
-- In Debug, check the device console (subsystem `dev.sonda.sdk`): invalid or dropped events are logged.
-- For a real end-to-end check use a Release build that is not TestFlight (App Store, or Ad Hoc), open
-  the app, background it, then ask Claude via the Sonda MCP for `recent_events` of that app.
+Step-by-step deployment on Coolify, including R2 setup, environment variables, limits and a restore
+drill: [`docs/deploy.md`](docs/deploy.md).
 
-## Server
+Managing apps (the image has no shell, so run the binary directly):
 
-One Go binary (`sonda`) with:
-- `POST /v1/events`: batch ingestion with the app's ingest key (validation, dedup by `event_id`,
-  rate limit, daily quota, no IP stored);
-- `/mcp/sonda`: MCP server (Streamable HTTP, secret token) with tools `list_apps`, `event_counts`,
-  `funnel`, `retention`, `recent_events`, `query` (read-only SQL);
-- CLI: `sonda app create|list|rotate-key`, `sonda serve`, `sonda healthcheck`, `sonda version`.
+```sh
+docker exec <app-container> /sonda app create "My App"      # prints the ingest key once
+docker exec <app-container> /sonda app list
+docker exec <app-container> /sonda app rotate-key "My App"  # new key, the old one stops working
+```
 
-Run `sonda` commands on the server with `docker exec <app-container> /sonda …` (the image has no shell).
-Wire contract for clients: [`.jerome/notes/ingest-contract.md`](.jerome/notes/ingest-contract.md).
-Deploy, backup and restore: [`docs/deploy.md`](docs/deploy.md).
+## Connecting Claude
 
-### Development
+The MCP endpoint is `https://<your-host>/mcp/sonda`. It uses Streamable HTTP and the token set in
+`SONDA_MCP_TOKEN`.
 
-- Go tests (Go runs in Docker): [`.jerome/notes/recipes/go-via-docker.md`](.jerome/notes/recipes/go-via-docker.md)
-- SDK tests: [`.jerome/notes/recipes/sdk-tests.md`](.jerome/notes/recipes/sdk-tests.md)
-- Local restore test with MinIO: `scripts/restore-test.sh`
-- Connecting Claude to the MCP: [`.jerome/notes/recipes/mcp-connect.md`](.jerome/notes/recipes/mcp-connect.md)
+```sh
+# Claude Code
+claude mcp add --transport http sonda https://<your-host>/mcp/sonda \
+  --header "Authorization: Bearer <token>"
+```
+
+On claude.ai or the Claude apps, add a custom connector with the URL
+`https://<your-host>/mcp/sonda?token=<token>`.
+
+Then ask Claude things like *"How does the onboarding funnel of MyApp look over the last 30 days?"* or
+*"Which features do paying users use most?"*
+
+## Development
+
+- Go server: `go test ./...`. If Go isn't installed you can use Docker; see
+  [`.jerome/notes/recipes/go-via-docker.md`](.jerome/notes/recipes/go-via-docker.md).
+- Swift SDK: `swift test`, or `xcodebuild test` on an iOS simulator.
+- Backup and restore end to end, using MinIO in place of R2: `scripts/restore-test.sh`.
+- The event format the SDK sends to the server:
+  [`.jerome/notes/ingest-contract.md`](.jerome/notes/ingest-contract.md).
