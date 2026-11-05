@@ -64,6 +64,7 @@ type ev struct {
 	version       string
 	deviceType    string
 	storefront    string
+	env           string // "" = production
 }
 
 func (f *fixture) add(evs ...ev) {
@@ -81,7 +82,7 @@ func (f *fixture) add(evs ...ev) {
 		se := store.Event{
 			EventID: uid(fmt.Sprint("event", f.n)), Name: e.name, TS: e.at.UnixMilli(),
 			UserID: uid(e.user), SessionID: uid(sess), AppVersion: e.version,
-			DeviceType: e.deviceType, Storefront: e.storefront, Props: e.props,
+			DeviceType: e.deviceType, Storefront: e.storefront, Props: e.props, Environment: e.env,
 		}
 		if _, err := f.st.InsertEvents(context.Background(), f.apps[app], e.at.Add(time.Minute), []store.Event{se}); err != nil {
 			f.t.Fatal(err)
@@ -113,20 +114,20 @@ func TestResolveApp(t *testing.T) {
 func TestResolveScope(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	sc, err := f.svc.resolveScope(ctx, "Alpha", "", "")
+	sc, err := f.svc.resolveScope(ctx, "Alpha", "", "", "")
 	if err != nil || sc.to != now.UnixMilli() || sc.from != now.Add(-30*24*time.Hour).UnixMilli() {
 		t.Fatalf("default scope = %+v, %v", sc, err)
 	}
-	sc, err = f.svc.resolveScope(ctx, "Alpha", "2026-10-01", "2026-10-31")
+	sc, err = f.svc.resolveScope(ctx, "Alpha", "2026-10-01", "2026-10-31", "")
 	if err != nil || sc.period() != (Period{"2026-10-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z"}) {
 		t.Fatalf("date scope = %+v, %v", sc.period(), err)
 	}
-	sc, err = f.svc.resolveScope(ctx, "Alpha", "2026-10-01T10:00:00+02:00", "2026-10-02T00:00:00Z")
+	sc, err = f.svc.resolveScope(ctx, "Alpha", "2026-10-01T10:00:00+02:00", "2026-10-02T00:00:00Z", "")
 	if err != nil || sc.period().From != "2026-10-01T08:00:00.000Z" || sc.period().To != "2026-10-02T00:00:00.000Z" {
 		t.Fatalf("rfc3339 scope = %+v, %v", sc.period(), err)
 	}
 	for _, c := range [][2]string{{"yesterday", ""}, {"", "11/04/2026"}, {"2026-11-05", "2026-11-01"}} {
-		if _, err := f.svc.resolveScope(ctx, "Alpha", c[0], c[1]); err == nil {
+		if _, err := f.svc.resolveScope(ctx, "Alpha", c[0], c[1], ""); err == nil {
 			t.Errorf("scope %q..%q: no error", c[0], c[1])
 		}
 	}
@@ -160,7 +161,7 @@ func TestListApps(t *testing.T) {
 	f.add(ev{name: "app.first_launch", at: day(3, 9), user: "u1"},
 		ev{name: "screen.viewed", at: day(1, 9), user: "u1"},
 		ev{name: "screen.viewed", at: day(1, 10), user: "u2"})
-	res, err := f.svc.ListApps(context.Background())
+	res, err := f.svc.ListApps(context.Background(), AppsInput{})
 	if err != nil {
 		t.Fatal(err)
 	}

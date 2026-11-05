@@ -4,6 +4,11 @@
 // fixed allow-list. Prop keys are validated and used only as bound JSON
 // paths in json_extract.
 //
+// Environments (D23): every tool filters on events.environment, production
+// by default, so test builds (testflight, development) never mix with real
+// users unless asked. The filter is always written as environment IN (...),
+// "all" included, so the (app_id, environment, ...) indexes stay usable.
+//
 // Times: events.ts is the device time in milliseconds since the Unix epoch.
 // Ranges are half-open [from, to) on ts; days and weeks are UTC, weeks start
 // on Monday.
@@ -65,7 +70,45 @@ type Period struct {
 
 type scope struct {
 	app      AppRef
-	from, to int64 // ms, [from, to)
+	from, to int64    // ms, [from, to)
+	env      string   // the filter as given: production, testflight, development or all
+	envs     []string // the environment values it matches
+}
+
+// Environment filter values (D23). DefaultEnvironment is used when the
+// parameter is omitted; EnvironmentAll matches every value.
+const (
+	DefaultEnvironment = "production"
+	EnvironmentAll     = "all"
+)
+
+// environments are the stored events.environment values (schema CHECK).
+var environments = []string{"production", "testflight", "development"}
+
+// resolveEnv parses an environment filter: "" means production.
+func resolveEnv(v string) (string, []string, error) {
+	v = strings.ToLower(strings.TrimSpace(v))
+	switch v {
+	case "":
+		return DefaultEnvironment, []string{DefaultEnvironment}, nil
+	case EnvironmentAll:
+		return v, environments, nil
+	}
+	for _, e := range environments {
+		if v == e {
+			return v, []string{v}, nil
+		}
+	}
+	return "", nil, fmt.Errorf("environment must be production (default), testflight, development or all, got %q", v)
+}
+
+// envCond returns "<col> IN (?, ...)" over envs, with its arguments.
+func envCond(col string, envs []string) (string, []any) {
+	args := make([]any, len(envs))
+	for i, e := range envs {
+		args[i] = e
+	}
+	return col + " IN (" + strings.TrimSuffix(strings.Repeat("?, ", len(envs)), ", ") + ")", args
 }
 
 func (sc scope) period() Period { return Period{FormatTime(sc.from), FormatTime(sc.to)} }
@@ -75,9 +118,13 @@ func FormatTime(ms int64) string {
 	return time.UnixMilli(ms).UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
-// resolveScope finds the app and parses the range. Defaults: to = now,
-// from = to - 30 days.
-func (s *Service) resolveScope(ctx context.Context, app, from, to string) (scope, error) {
+// resolveScope finds the app and parses the range and the environment.
+// Defaults: to = now, from = to - 30 days, environment = production.
+func (s *Service) resolveScope(ctx context.Context, app, from, to, environment string) (scope, error) {
+	env, envs, err := resolveEnv(environment)
+	if err != nil {
+		return scope{}, err
+	}
 	a, err := s.resolveApp(ctx, app)
 	if err != nil {
 		return scope{}, err
@@ -97,7 +144,7 @@ func (s *Service) resolveScope(ctx context.Context, app, from, to string) (scope
 	if !start.Before(end) {
 		return scope{}, errors.New("from must be before to")
 	}
-	return scope{app: a, from: start.UnixMilli(), to: end.UnixMilli()}, nil
+	return scope{app: a, from: start.UnixMilli(), to: end.UnixMilli(), env: env, envs: envs}, nil
 }
 
 // parseTime accepts YYYY-MM-DD (UTC midnight; for an end bound the next
@@ -247,14 +294,18 @@ func checkNames(names []string) error {
 	return nil
 }
 
-// where builds the common filter: app, range, optional names and props.
+// where builds the common filter: app, environment, range, optional names and props.
 type where struct {
 	conds []string
 	args  []any
 }
 
 func newWhere(sc scope) *where {
-	return &where{conds: []string{"app_id = ?", "ts >= ?", "ts < ?"}, args: []any{sc.app.ID, sc.from, sc.to}}
+	ec, eargs := envCond("environment", sc.envs)
+	w := &where{conds: []string{"app_id = ?", ec}, args: append([]any{sc.app.ID}, eargs...)}
+	w.add("ts >= ?", sc.from)
+	w.add("ts < ?", sc.to)
+	return w
 }
 
 func (w *where) add(cond string, args ...any) {

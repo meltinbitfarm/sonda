@@ -1,8 +1,9 @@
 import Foundation
+import StoreKit
 import Testing
 @testable import Sonda
 
-/// Identity and sessions (D10) and the production-only filter (D8).
+/// Identity and sessions (D10) and the environment mark (D23).
 @Suite struct SessionTests {
     private func sessionIDs(_ e: Engine) async -> [String] {
         await e.queuedEvents.compactMap { (try? JSONDecoder().decode(WireEvent.self, from: $0.json))?.sessionID }
@@ -104,23 +105,47 @@ import Testing
         #expect(await e.queuedNames.last == "app.session_started")
     }
 
-    @Test(arguments: [AppEnvironment.debug, .simulator, .xcode, .testFlight])
-    func nonProductionDropsEverything(environment: AppEnvironment) async {
+    @Test(arguments: AppEnvironment.allCases)
+    func everyEnvironmentSendsMarkedEvents(environment: AppEnvironment) async {
         let h = Harness()
         h.environment = environment
         let e = await h.engine()
-        await e.track("feature.used", at: h.clock.now)
-        await e.handle(.foreground(at: h.clock.now))
+        await e.track("feature.used", ["feature": "export"], at: h.clock.now)
         await e.flush()
         #expect(await e.queuedEvents.isEmpty)
-        #expect(h.server.requests.isEmpty)
-        #expect(!FileManager.default.fileExists(atPath: h.queueURL.path))
-        #expect(h.defaults.string(forKey: Engine.Keys.userID) == nil)
+        let r = h.server.requests
+        #expect(r.count == 1)
+        #expect(r.first?.names == ["app.session_started", "app.first_launch", "feature.used"])
+        #expect(r.first?.events.map { $0["environment"] as? String } == Array(repeating: environment.rawValue, count: 3))
+        #expect(h.defaults.string(forKey: Engine.Keys.userID) != nil)
     }
 
-    @Test func testBinaryIsNotProduction() async {
-        // The real check: test builds are DEBUG (or run in the simulator), so they must not send.
-        #expect(await AppEnvironment.detect() != .production)
+    @Test func testBinaryIsDevelopment() async {
+        // The real check: test builds are DEBUG (and on iOS run in the simulator).
+        #expect(await AppEnvironment.detect() == .development)
+    }
+
+    @Test func storeKitEnvironmentMapping() {
+        #expect(AppEnvironment.environment(for: .production) == .production)
+        #expect(AppEnvironment.environment(for: .sandbox) == .testflight)
+        #expect(AppEnvironment.environment(for: .xcode) == .development)
+        #expect(AppEnvironment.environment(for: AppStore.Environment(rawValue: "SomethingNew")) == .testflight)
+    }
+
+    @Test func queueFromSDK010WithoutEnvironmentStillSends() async throws {
+        // 0.1.0 queued only production events and had no environment field; the server stores
+        // a missing environment as production, so those lines are sent as they are.
+        let h = Harness()
+        let old = #"{"event_id":"3f2504e0-4f89-11d3-9a0c-0305e82c3301","name":"screen.viewed","session_id":"7c9e6679-7425-40de-944b-e07fc1f90ae7","ts":\#(Engine.milliseconds(h.clock.now)),"user_id":"0f8fad5b-d9cb-469f-a165-70867728950e"}"#
+        try FileManager.default.createDirectory(at: h.directory, withIntermediateDirectories: true)
+        try Data((old + "\n").utf8).write(to: h.queueURL)
+        h.environment = .testflight
+        let e = await h.engine()
+        await e.flush()
+        let events = h.server.requests.flatMap(\.events)
+        let legacy = try #require(events.first { $0["event_id"] as? String == "3f2504e0-4f89-11d3-9a0c-0305e82c3301" })
+        #expect(legacy["environment"] == nil)
+        #expect(events.filter { $0["environment"] as? String == "testflight" }.count == 2)
     }
 
     @Test func storefrontIsCached() async {

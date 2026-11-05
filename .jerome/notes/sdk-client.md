@@ -24,10 +24,11 @@ Commands: notes/recipes/sdk-tests.md. Integration guide: sdk/README.md.
    and `track` never blocks. ts and event_id are captured at call time.
 3. **Startup:** the engine awaits the environment check (AppTransaction, 10 s timeout) and
    Storefront.current (5 s timeout) before processing commands; calls made meanwhile wait in memory.
-4. **Production check:** `#if DEBUG` -> drop; `targetEnvironment(simulator)` -> drop; AppTransaction
-   environment `.production` sends, `.sandbox` (TestFlight) and `.xcode` drop; if AppTransaction is
-   unavailable, receipt file named `sandboxReceipt` -> drop, else send. In non-production nothing is
-   written: no queue file, no user_id in UserDefaults. Injectable via `Dependencies.environment`.
+4. **Environment (D23, O10; replaced the D8 drop):** every build sends and every event carries
+   `environment`. `#if DEBUG` -> development; `targetEnvironment(simulator)` -> development; AppTransaction
+   environment `.production` -> production, `.sandbox` (TestFlight) -> testflight, `.xcode` -> development,
+   unknown -> testflight; if AppTransaction is unavailable, receipt file named `sandboxReceipt` ->
+   testflight, else production. Injectable via `Dependencies.environment`. Details: notes/o10-environment.md.
    Note: `#if DEBUG` is the package's own build configuration, which Xcode sets equal to the app's.
 5. **Identity:** user_id and session_id are lowercase UUIDs in UserDefaults.standard (`dev.sonda.*` keys).
    UserDefaults is backed up, so a restored/migrated device keeps the same user_id (no new first_launch).
@@ -86,9 +87,9 @@ Commands: notes/recipes/sdk-tests.md. Integration guide: sdk/README.md.
   error; backoff cap and jitter bounds; 429 Retry-After 120 s; Retry-After parsing (seconds, HTTP date);
   429 without header.
 - SessionTests: first launch, user_id persisted and first_launch once, relaunch < 30 min keeps the
-  session, rollover after 30 min of inactivity (sliding), foreground after long background, non-production
-  environments (debug, simulator, xcode, TestFlight) store and send nothing, the real check is not
-  production in tests, storefront cached, timeout helper.
+  session, rollover after 30 min of inactivity (sliding), foreground after long background, every
+  environment sends events marked with it, the real check is development in tests, StoreKit mapping,
+  0.1.0 queue lines without environment still send, storefront cached, timeout helper.
 - PublicAPITests: `Sonda.configure` + every catalog helper + `track` reach the server in call order with
   the right props; second configure ignored.
 - LiveServerTests: optional, real `sonda serve` (recipe).

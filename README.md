@@ -13,7 +13,8 @@ paywall convert, do people come back after a week?
   (or any S3-compatible storage) for backup. It runs comfortably next to other things on a small VPS.
 - **No dashboard to build or maintain.** You ask Claude, which uses a few composable MCP tools: counts,
   funnels, retention and read-only SQL.
-- **Clean production data.** The SDK drops events from Debug builds, the simulator and TestFlight.
+- **Test without polluting your numbers.** Every event is marked `production`, `testflight` or
+  `development` (Debug builds, the simulator). Claude sees only real users unless you ask for the tests.
 - **Privacy by default.** No IP addresses are stored, there is no IP geolocation and no advertising
   or vendor identifiers. Users are identified by a random UUID created on the device.
 
@@ -30,14 +31,15 @@ iOS app ── Sonda SDK ──▶ POST /v1/events ──▶ sonda (Go) ──�
 - The **server** checks each event, removes duplicates and stores it. Each app has its own write-only
   ingest key.
 - The **MCP endpoint**, protected by a secret token, gives Claude these tools: `list_apps`,
-  `event_counts`, `funnel`, `retention`, `recent_events` and `query` (read-only SQL).
+  `event_counts`, `funnel`, `retention`, `recent_events` and `query` (read-only SQL). All of them look at
+  production events unless told to use `testflight`, `development` or `all`.
 
 ## Using the SDK in an app
 
 Requirements: iOS 17 or macOS 14, Xcode 16 or later. No dependencies.
 
 **1. Add the package.** In Xcode choose File → Add Package Dependencies, enter
-`https://github.com/meltinbitfarm/sonda.git`, pick version `0.1.0` or later and add the `Sonda` library
+`https://github.com/meltinbitfarm/sonda.git`, pick version `0.2.0` or later and add the `Sonda` library
 to your app target. Only the Swift sources in `sdk/` are built: the server code in this repository never
 ends up in your app.
 
@@ -85,8 +87,10 @@ Sonda.track("export.finished", props: ["format": "pdf", "pages": 12])
 Event names look like `area.action_in_past_tense`. Props are flat: strings, numbers and booleans only.
 **Never put personal data in props.**
 
-Only production builds send events. To check your instrumentation, run a Debug build and watch the
-device console (subsystem `dev.sonda.sdk`).
+Every build sends events, marked with where it runs: `development` for Debug builds, the simulator and
+Xcode installs, `testflight` for TestFlight, `production` for the App Store. The MCP tools count only
+production by default, so to check your instrumentation run a Debug build and ask Claude something like
+*"Show me the recent development events of MyApp"*.
 
 The full SDK guide covers the event catalogue, delivery and retries, privacy, and moving over from
 TelemetryDeck: [`sdk/README.md`](sdk/README.md).

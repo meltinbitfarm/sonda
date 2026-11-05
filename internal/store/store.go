@@ -232,9 +232,18 @@ func (s *Store) ListApps(ctx context.Context) ([]App, error) {
 	return apps, rows.Err()
 }
 
+// Environments are the accepted events.environment values (D23), checked by
+// the schema too. DefaultEnvironment is stored when the client sends none.
+var Environments = []string{"production", "testflight", "development"}
+
+// DefaultEnvironment is what an event without environment is stored as:
+// SDK 0.1.0 never sent anything but production builds.
+const DefaultEnvironment = "production"
+
 // Event is a validated event ready to be stored. App ID and received_at are
 // set by the server, never by the client. Empty optional strings are stored
-// as NULL. Props must be a valid JSON object.
+// as NULL; an empty Environment is stored as DefaultEnvironment. Props must
+// be a valid JSON object.
 type Event struct {
 	EventID     string // client-generated UUID, unique per app
 	Name        string
@@ -249,6 +258,7 @@ type Event struct {
 	Storefront  string
 	DeviceModel string
 	DeviceType  string
+	Environment string // production, testflight or development
 	Props       string
 }
 
@@ -271,8 +281,8 @@ func (s *Store) InsertEvents(ctx context.Context, appID int64, receivedAt time.T
 	}()
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO events
 		(app_id, event_id, name, ts, received_at, user_id, session_id, app_version, build, os_version,
-		 locale, region, storefront, device_model, device_type, props)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 locale, region, storefront, device_model, device_type, environment, props)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (app_id, event_id) DO NOTHING`)
 	if err != nil {
 		return 0, err
@@ -287,10 +297,14 @@ func (s *Store) InsertEvents(ctx context.Context, appID int64, receivedAt time.T
 		if e.EventID == "" {
 			return 0, errors.New("event without event_id")
 		}
+		env := e.Environment
+		if env == "" {
+			env = DefaultEnvironment
+		}
 		res, err := stmt.ExecContext(ctx, appID, e.EventID, e.Name, e.TS, recv, e.UserID, e.SessionID,
 			nullIfEmpty(e.AppVersion), nullIfEmpty(e.Build), nullIfEmpty(e.OSVersion),
 			nullIfEmpty(e.Locale), nullIfEmpty(e.Region), nullIfEmpty(e.Storefront),
-			nullIfEmpty(e.DeviceModel), nullIfEmpty(e.DeviceType), props)
+			nullIfEmpty(e.DeviceModel), nullIfEmpty(e.DeviceType), env, props)
 		if err != nil {
 			return 0, err
 		}

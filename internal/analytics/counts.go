@@ -24,6 +24,7 @@ var groupColumns = map[string]string{
 	"locale":       "locale",
 	"device_type":  "device_type",
 	"device_model": "device_model",
+	"environment":  "environment",
 }
 
 // bucketExprs are UTC days and Monday-starting weeks, as YYYY-MM-DD.
@@ -34,14 +35,15 @@ var bucketExprs = map[string]string{
 
 // CountsInput is the input of event_counts.
 type CountsInput struct {
-	App     string         `json:"app" jsonschema:"app name or numeric id (see list_apps)"`
-	From    string         `json:"from,omitempty" jsonschema:"start, inclusive: YYYY-MM-DD (UTC) or RFC 3339; default 30 days before 'to'"`
-	To      string         `json:"to,omitempty" jsonschema:"end: YYYY-MM-DD (that whole UTC day included) or RFC 3339 (exclusive); default now"`
-	Names   []string       `json:"names,omitempty" jsonschema:"only these event names, e.g. [\"paywall.shown\", \"purchase.completed\"]"`
-	Props   map[string]any `json:"props,omitempty" jsonschema:"equality filter on props, e.g. {\"placement\": \"onboarding\"}; values string, number, boolean, or null for a missing prop"`
-	GroupBy []string       `json:"group_by,omitempty" jsonschema:"up to 3 of: name, app_version, build, os_version, storefront, region, locale, device_type, device_model, prop:<key> (e.g. prop:screen)"`
-	Bucket  string         `json:"bucket,omitempty" jsonschema:"optional time bucket: day or week (UTC, weeks start Monday)"`
-	Limit   int            `json:"limit,omitempty" jsonschema:"max rows, default 500, max 5000"`
+	App         string         `json:"app" jsonschema:"app name or numeric id (see list_apps)"`
+	Environment string         `json:"environment,omitempty" jsonschema:"production (default: real App Store users only, test builds excluded), testflight (TestFlight/sandbox builds), development (Debug, simulator, Xcode installs) or all"`
+	From        string         `json:"from,omitempty" jsonschema:"start, inclusive: YYYY-MM-DD (UTC) or RFC 3339; default 30 days before 'to'"`
+	To          string         `json:"to,omitempty" jsonschema:"end: YYYY-MM-DD (that whole UTC day included) or RFC 3339 (exclusive); default now"`
+	Names       []string       `json:"names,omitempty" jsonschema:"only these event names, e.g. [\"paywall.shown\", \"purchase.completed\"]"`
+	Props       map[string]any `json:"props,omitempty" jsonschema:"equality filter on props, e.g. {\"placement\": \"onboarding\"}; values string, number, boolean, or null for a missing prop"`
+	GroupBy     []string       `json:"group_by,omitempty" jsonschema:"up to 3 of: name, app_version, build, os_version, storefront, region, locale, device_type, device_model, environment, prop:<key> (e.g. prop:screen)"`
+	Bucket      string         `json:"bucket,omitempty" jsonschema:"optional time bucket: day or week (UTC, weeks start Monday)"`
+	Limit       int            `json:"limit,omitempty" jsonschema:"max rows, default 500, max 5000"`
 }
 
 // CountRow is one group (and bucket) of event_counts.
@@ -61,18 +63,19 @@ type Totals struct {
 
 // CountsResult is the output of event_counts.
 type CountsResult struct {
-	App       AppRef     `json:"app"`
-	Period    Period     `json:"period"`
-	GroupBy   []string   `json:"group_by"`
-	Bucket    string     `json:"bucket,omitempty"`
-	Total     Totals     `json:"total"`
-	Rows      []CountRow `json:"rows"`
-	Truncated bool       `json:"truncated"`
+	App         AppRef     `json:"app"`
+	Environment string     `json:"environment"`
+	Period      Period     `json:"period"`
+	GroupBy     []string   `json:"group_by"`
+	Bucket      string     `json:"bucket,omitempty"`
+	Total       Totals     `json:"total"`
+	Rows        []CountRow `json:"rows"`
+	Truncated   bool       `json:"truncated"`
 }
 
 // EventCounts counts events and unique users, optionally grouped and bucketed.
 func (s *Service) EventCounts(ctx context.Context, in CountsInput) (CountsResult, error) {
-	sc, err := s.resolveScope(ctx, in.App, in.From, in.To)
+	sc, err := s.resolveScope(ctx, in.App, in.From, in.To, in.Environment)
 	if err != nil {
 		return CountsResult{}, err
 	}
@@ -106,7 +109,7 @@ func (s *Service) EventCounts(ctx context.Context, in CountsInput) (CountsResult
 		}
 		col, ok := groupColumns[g]
 		if !ok {
-			return CountsResult{}, fmt.Errorf("unknown group_by %q; use name, app_version, build, os_version, storefront, region, locale, device_type, device_model or prop:<key>", g)
+			return CountsResult{}, fmt.Errorf("unknown group_by %q; use name, app_version, build, os_version, storefront, region, locale, device_type, device_model, environment or prop:<key>", g)
 		}
 		sel = append(sel, col)
 	}
@@ -119,7 +122,7 @@ func (s *Service) EventCounts(ctx context.Context, in CountsInput) (CountsResult
 	}
 	limit := clamp(in.Limit, defaultCountRows, maxCountRows)
 
-	res := CountsResult{App: sc.app, Period: sc.period(), GroupBy: in.GroupBy, Bucket: in.Bucket, Rows: []CountRow{}}
+	res := CountsResult{App: sc.app, Environment: sc.env, Period: sc.period(), GroupBy: in.GroupBy, Bucket: in.Bucket, Rows: []CountRow{}}
 	if res.GroupBy == nil {
 		res.GroupBy = []string{}
 	}

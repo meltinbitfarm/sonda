@@ -2,28 +2,28 @@ import Foundation
 import StoreKit
 import os
 
-/// Where the app is running. Only `.production` sends events (D8): DEBUG builds,
-/// the simulator, Xcode installs and TestFlight are dropped so the data stays clean.
-enum AppEnvironment: String, Sendable {
+/// Where the app is running (D23). Every event carries it as `environment`; nothing is dropped,
+/// so a build can be checked before release, and the server's tools show production by default.
+/// The raw values are the wire values of the ingest contract.
+enum AppEnvironment: String, Sendable, Codable, CaseIterable {
+    /// App Store installs, and Release builds distributed outside it (Ad Hoc, Enterprise, Developer ID).
     case production
-    case debug
-    case simulator
-    case xcode
-    case testFlight
+    /// TestFlight (StoreKit sandbox, or a sandbox receipt when StoreKit cannot answer).
+    case testflight
+    /// DEBUG builds, the simulator and Xcode installs.
+    case development
 
-    var sendsEvents: Bool { self == .production }
-
-    /// The real check. Injected in `Engine.Dependencies` so tests can say "production".
+    /// The real check. Injected in `Engine.Dependencies` so tests can pick any environment.
     static func detect() async -> AppEnvironment {
         #if DEBUG
-        return .debug
+        return .development
         #elseif targetEnvironment(simulator)
-        return .simulator
+        return .development
         #else
         if let env = await appTransactionEnvironment() { return env }
         // No App Store answer (offline on first launch, or not signed in): fall back to the
         // receipt file name, which is `sandboxReceipt` for TestFlight and Xcode installs.
-        if Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt" { return .testFlight }
+        if Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt" { return .testflight }
         return .production
         #endif
     }
@@ -37,13 +37,18 @@ enum AppEnvironment: String, Sendable {
             case .verified(let t): transaction = t
             case .unverified(let t, _): transaction = t
             }
-            switch transaction.environment {
-            case .production: return .production
-            case .sandbox: return .testFlight
-            case .xcode: return .xcode
-            default: return .testFlight
-            }
+            return environment(for: transaction.environment)
         } ?? nil
+    }
+
+    /// StoreKit's environment to ours. An unknown future value is a test install, never production.
+    static func environment(for storeKit: AppStore.Environment) -> AppEnvironment {
+        switch storeKit {
+        case .production: return .production
+        case .sandbox: return .testflight
+        case .xcode: return .development
+        default: return .testflight
+        }
     }
 }
 

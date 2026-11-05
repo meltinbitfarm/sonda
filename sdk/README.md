@@ -18,7 +18,7 @@ The repository also contains the Go server; SwiftPM only builds `sdk/Sources/Son
 In a `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/meltinbitfarm/sonda.git", from: "0.1.0"),
+.package(url: "https://github.com/meltinbitfarm/sonda.git", from: "0.2.0"),
 // target dependency:
 .product(name: "Sonda", package: "sonda"),
 ```
@@ -53,25 +53,34 @@ From then on Sonda sends, by itself:
 - `app.first_launch` on the first launch (a random `user_id` is created and kept in UserDefaults),
 - `app.session_started` whenever a session starts (after 30 minutes without activity, D10),
 - the automatic fields on every event: app version and build, OS version, locale, region, App Store
-  storefront, raw device model (`iPhone16,2`), device type (`phone`/`pad`/`mac`).
+  storefront, raw device model (`iPhone16,2`), device type (`phone`/`pad`/`mac`) and environment (below).
 
-## Only production sends
+## Environments
 
-Events are **dropped** (not stored, not sent) in DEBUG builds, in the simulator, in Xcode installs and in
-TestFlight (D8). The check uses `AppTransaction.environment`, with the sandbox receipt as fallback. To see
-that instrumentation works, use a Release build from the App Store or read the device console (subsystem
-`dev.sonda.sdk`): rejected events are logged there.
+Every build sends, and every event says where it comes from in its `environment` field (D23):
 
-Precisely, a build sends unless one of these holds:
-- it is compiled with the `DEBUG` flag (Xcode's Debug configuration sets it; keep using the standard
-  Debug/Release configurations: a custom debug configuration without `DEBUG` is caught only by the checks
-  below);
-- it runs in the simulator;
-- StoreKit says the install comes from Xcode or TestFlight (sandbox), or, when StoreKit cannot answer, the
-  receipt is a sandbox receipt.
+| environment | when |
+|---|---|
+| `development` | the build is compiled with the `DEBUG` flag, runs in the simulator, or StoreKit says it was installed from Xcode |
+| `testflight` | StoreKit says TestFlight (sandbox) or, when StoreKit cannot answer (offline at launch), the receipt is a sandbox receipt |
+| `production` | everything else: App Store builds, and Release builds distributed outside the App Store (Ad Hoc, Enterprise, a Developer ID Mac app) |
 
-So Release builds distributed outside the App Store (Ad Hoc, Enterprise, a Developer ID Mac app) **do send**,
-like App Store builds.
+The server's tools count **only `production`** unless asked otherwise, so your own tests never mix with
+real users. To check instrumentation, run a Debug build and ask Claude for the recent events with
+environment `development` (or `testflight` for a TestFlight build); the device console (subsystem
+`dev.sonda.sdk`) also logs rejected events.
+
+Notes:
+- `DEBUG` is the flag Xcode's standard Debug configuration sets. A custom debug configuration without it is
+  caught only by the simulator and StoreKit checks, so keep using the standard configurations.
+- The environment is decided once per launch (StoreKit may take up to 10 s offline) and stamped on each
+  event when it is recorded; a queued event keeps the environment it was recorded with.
+- Test events count toward the app's daily server quota (50,000 events per day by default) like any other.
+- The random `user_id` lives in UserDefaults, which usually survives replacing a Debug or TestFlight install with
+  the App Store build on the same device. That user's `app.first_launch` then stays in the test
+  environment, so the device does not appear as a new production user in retention cohorts.
+- SDK 0.1.0 dropped test builds instead and sends no `environment`; the server stores its events as
+  `production`, which is what they are.
 
 ## Standard events (D12)
 

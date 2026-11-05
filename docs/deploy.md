@@ -202,3 +202,9 @@ needs an image holding both binaries; not built yet.
 Push to the deployed branch and redeploy. `restore` skips (database exists), `app` runs pending
 migrations at start; a database newer than the binary is refused, so rolling back the image after a
 migration needs a restore to an earlier point (`litestream restore -timestamp`).
+
+Migrations so far: 0001 (tables), 0002 (0.2.0: `events.environment`, existing rows become `production`,
+indexes rebuilt with the environment column). 0002 runs in one transaction at the first start of 0.2.0;
+on a small database it takes milliseconds. After it, a 0.1.x image no longer starts on that database.
+Deploy the server before releasing apps with SDK 0.2.0: an older server ignores the unknown field and
+would store test events as `production`.

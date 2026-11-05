@@ -1,6 +1,7 @@
 # Ingest contract: `POST /v1/events`
 
-Version 1, 2026-11-04 (event_id added the same day, before any SDK). Implemented by `internal/ingest` (validation) and `internal/server/ingest.go` (HTTP).
+Version 2, 2026-11-05: optional `environment` added (D23, O10). Version 1, 2026-11-04 (event_id added the same day, before any SDK).
+Version 2 is backward compatible: a version-1 client (SDK 0.1.0) sends no `environment` and its events are stored as `production`, which is what they are (0.1.0 sent only production builds). Implemented by `internal/ingest` (validation) and `internal/server/ingest.go` (HTTP).
 The Swift SDK (sdk/) implements the client side. Change both in the same commit (D17).
 
 ## Request
@@ -29,6 +30,7 @@ Body: a JSON object with one key, `events`, an array of 1 to 100 events.
       "storefront": "ITA",
       "device_model": "iPhone16,2",
       "device_type": "phone",
+      "environment": "production",
       "props": {"placement": "onboarding", "variant": "b"}
     }
   ]
@@ -55,10 +57,20 @@ ignored (unknown fields are ignored so a newer SDK can talk to an older server).
 | storefront | no | string | Storefront.current?.countryCode (alpha-3), ≤ 64 bytes; omit if nil |
 | device_model | no | string | raw hardware id, e.g. `iPhone16,2`, ≤ 64 bytes |
 | device_type | no | string | one of `phone`, `pad`, `mac` |
+| environment | no | string | one of `production`, `testflight`, `development` (D23). Omitted, `null` or `""` = `production`; any other value (other case included) rejects the event. See below |
 | props | no | object | flat JSON object, see below; missing or null = `{}` |
 
 Optional strings: omitted, `null` or `""` are all stored as NULL. No control characters allowed.
 A field of the wrong JSON type (e.g. `"ts": "2026-…"`, `"ts": 1.5`, `"region": 39`) rejects the event.
+
+### environment
+Where the build runs, decided once per launch by the SDK: `development` for DEBUG builds, the simulator
+and Xcode installs; `testflight` for TestFlight (StoreKit `AppTransaction.environment == .sandbox`, or a
+`sandboxReceipt` when StoreKit cannot answer); `production` otherwise (App Store, and Release builds
+distributed outside it: Ad Hoc, Enterprise, Developer ID). The SDK no longer drops test builds: it sends
+them marked, and the MCP tools count only `production` unless asked (`environment` parameter:
+`production` default, `testflight`, `development`, `all`). Stored in `events.environment`, `NOT NULL`,
+default `production`, with a CHECK on the three values (migration 0002).
 
 ### props
 - JSON object; values only string, number, boolean or null. No nested objects or arrays (D13).

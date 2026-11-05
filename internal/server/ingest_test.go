@@ -221,6 +221,29 @@ func TestIngestPartialBatch(t *testing.T) {
 	}
 }
 
+// D23: environment is optional (old SDKs send none: production), stored as
+// sent, and an unknown value rejects only that event.
+func TestIngestEnvironment(t *testing.T) {
+	e := newEnv(t, Config{})
+	rec := e.post(e.key, batchBody(
+		ev("app.session_started"),
+		ev("screen.viewed", "environment", "testflight"),
+		ev("feature.used", "environment", "development"),
+		ev("feature.used", "environment", "staging"),
+		ev("paywall.shown", "environment", "production"),
+	))
+	r := decode(t, rec)
+	if rec.Code != http.StatusOK || r.Accepted != 4 || r.Rejected != 1 || r.Errors[0].Index != 3 ||
+		!strings.Contains(r.Errors[0].Reason, "environment") {
+		t.Fatalf("%d %+v", rec.Code, r)
+	}
+	for env, want := range map[string]int{"production": 2, "testflight": 1, "development": 1} {
+		if n := e.count("environment = ?", env); n != want {
+			t.Errorf("environment %s: %d events, want %d", env, n, want)
+		}
+	}
+}
+
 func TestIngestDuplicates(t *testing.T) {
 	e := newEnv(t, Config{})
 	a, b := ev("app.session_started"), ev("screen.viewed")
