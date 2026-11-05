@@ -14,7 +14,7 @@ Neither image has a shell.
 
 Files: `Dockerfile` (targets `app` and `litestream`), `docker-compose.yml`, `deploy/litestream.yml`,
 `.env.example`. Status: the stack is tested locally with MinIO in place of R2
-(`scripts/restore-test.sh`, below). A real Coolify deploy has not been done yet (Q1 / A1).
+(`scripts/restore-test.sh`, below). First Coolify deploy done 2026-11-05: `restore` → `app` ordering works (Q1 closed).
 
 ## 1. Cloudflare R2: bucket and token
 
@@ -55,9 +55,14 @@ Litestream detects R2 from the endpoint and applies its quirks itself (signed pa
    `R2_FORCE_PATH_STYLE` (`false`), `SONDA_INGEST_RATE_PER_MIN` (60), `SONDA_INGEST_MAX_BATCH` (100),
    `SONDA_INGEST_MAX_BODY_BYTES` (262144), `SONDA_INGEST_DAILY_QUOTA` (50000 events per app per UTC day),
    `SONDA_VERSION` (`dev`, shown by `sonda version` and in the startup log). See `.env.example`.
-4. **Domains**: on service `app` only, set `https://<sonda-host>:8080` (Q3: host still to choose).
-   The `:8080` tells Coolify's proxy the container port; clients still use 443. No `ports:` are
-   published; `restore` and `litestream` get no domain.
+4. **Domains**: on service `app` only, host `https://sonda.meltinbitfarm.cloud` (D22), port `8080`.
+   In older Coolify versions write it as `https://<host>:8080` in the `app` service's Domains field;
+   in newer ones use **Manage Domains** and pick service and port. The port tells Coolify's proxy
+   the container port; clients still use 443. No `ports:` are published; `restore` and `litestream`
+   get no domain.
+   Check under **Manage Domains** that the domain sits under `app`: on the first deploy Coolify
+   attached it to `restore` (the first service), and the proxy answered 503 with no TLS certificate
+   because `restore` exits after running.
 5. **Deploy**. In the deployment log expect, in order: images built, `restore` exited 0, `app` healthy,
    `litestream` started.
 
