@@ -24,3 +24,4 @@
 
 ## Backlog
 - O9: a Fabio — (push, tag 0.1.0, deploy su sonda.meltinbitfarm.cloud, Claude Code collegato, ripristino vero da R2 riuscito il 2026-11-05: fatti) integrare l'SDK nella quarta app (docs/deploy.md, sdk/README.md)
+- O10: campo environment (D23) in SDK, server e MCP, versione 0.2.0

@@ -7,7 +7,7 @@
 - D5: Docker Compose con 3 servizi sullo stesso volume /data: `restore` (litestream restore -if-db-not-exists -if-replica-exists), `app` (depends_on restore con service_completed_successfully), `litestream` (replicate) — ripristino automatico prima dell'avvio, immagine app senza shell
 - D6: nessuna UI, CLI nello stesso binario: `sonda serve` e `sonda app create "<nome>"` (stampa la ingest key) — basta il terminale del container su Coolify
 - D7: due tipi di token: ingest key per app (solo scrittura, considerata pubblica, protetta da rate limit e validazione) e un solo token di lettura segreto per l'MCP — la chiave dentro il binario dell'app è estraibile
-- D8: SDK Swift proprio (Swift Package, repo a parte): coda su disco, invio a batch, retry offline; scarta eventi in DEBUG, TestFlight e simulatore — dati di produzione puliti (In parte superata da D17: niente repo a parte, l'SDK sta in sdk/.)
+- D8 (in parte superata da D17 e D23): SDK Swift proprio (Swift Package, repo a parte): coda su disco, invio a batch, retry offline; scarta eventi in DEBUG, TestFlight e simulatore — dati di produzione puliti (In parte superata da D17: niente repo a parte, l'SDK sta in sdk/.)
 - D9: nessun IP salvato e nessuna geolocalizzazione da IP — privacy e niente database GeoIP da aggiornare
 - D10: campi automatici dall'SDK: name, ts, received_at, app_id (dalla ingest key), user_id (UUID casuale alla prima apertura, non IDFV), session_id (nuovo dopo 30 min di inattività), app_version, build, os_version, locale, region (Locale.current.region), storefront (Storefront.current?.countryCode), device_model (identificatore hardware grezzo, es. iPhone16,2), device_type (phone/pad/mac), props (JSON piatto) — tutto dal device, nulla identifica la persona
 - D11: nomi evento `area.azione_al_passato` in snake_case; pochi eventi generici con i dettagli nelle props; mai dati personali nelle props — stesse query e funnel per tutte le app
@@ -22,3 +22,4 @@
 - D20: L1 cambiata: il lead agent unisce i branch a main quando i test passano senza conflitti; push, tag, deploy restano a Fabio — scelta di Fabio
 - D21 (superata da D22): dominio del servizio sonda.meltinbit.com (chiude Q3) — stabile, entra nell'SDK delle app e nel connettore di Claude — scelta di Fabio
 - D22: dominio del servizio sonda.meltinbitfarm.cloud, supera D21 — quello reale indicato da Fabio
+- D23: l'SDK non scarta più gli eventi di Debug, simulatore e TestFlight: li manda marcati con `environment` = production / testflight / development; i tool MCP di default usano solo production, con filtro per vedere i test — Fabio deve testare prima di pubblicare e distinguere i suoi test dagli utenti veri. Scelta di Fabio, supera D8 sullo scarto.
