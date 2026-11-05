@@ -1,6 +1,14 @@
 package analytics
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
+
+// AppsInput is the input of list_apps.
+type AppsInput struct {
+	Environment string `json:"environment,omitempty" jsonschema:"which events the totals count: production (default: real App Store users only, test builds excluded), testflight, development or all"`
+}
 
 // AppInfo is one row of list_apps.
 type AppInfo struct {
@@ -16,24 +24,36 @@ type AppInfo struct {
 
 // AppsResult is the output of list_apps.
 type AppsResult struct {
-	Apps []AppInfo `json:"apps"`
+	Environment string    `json:"environment"`
+	Apps        []AppInfo `json:"apps"`
 }
 
-// ListApps returns every app with totals over all time.
-func (s *Service) ListApps(ctx context.Context) (AppsResult, error) {
-	rows, err := s.DB.QueryContext(ctx, `
+// ListApps returns every app (always all of them) with all-time totals over
+// the chosen environment.
+func (s *Service) ListApps(ctx context.Context, in AppsInput) (AppsResult, error) {
+	env, envs, err := resolveEnv(in.Environment)
+	if err != nil {
+		return AppsResult{}, err
+	}
+	cond, envArgs := envCond("e.environment", envs)
+	from := "FROM events e WHERE e.app_id = a.id AND " + cond
+	var args []any
+	for range 5 {
+		args = append(args, envArgs...)
+	}
+	rows, err := s.DB.QueryContext(ctx, fmt.Sprintf(`
 		SELECT a.id, a.name, a.created_at,
-		       (SELECT count(*) FROM events e WHERE e.app_id = a.id),
-		       (SELECT count(DISTINCT user_id) FROM events e WHERE e.app_id = a.id),
-		       (SELECT min(ts) FROM events e WHERE e.app_id = a.id),
-		       (SELECT max(ts) FROM events e WHERE e.app_id = a.id),
-		       (SELECT max(received_at) FROM events e WHERE e.app_id = a.id)
-		FROM apps a ORDER BY a.name`)
+		       (SELECT count(*) %[1]s),
+		       (SELECT count(DISTINCT user_id) %[1]s),
+		       (SELECT min(ts) %[1]s),
+		       (SELECT max(ts) %[1]s),
+		       (SELECT max(received_at) %[1]s)
+		FROM apps a ORDER BY a.name`, from), args...)
 	if err != nil {
 		return AppsResult{}, err
 	}
 	defer rows.Close()
-	res := AppsResult{Apps: []AppInfo{}}
+	res := AppsResult{Environment: env, Apps: []AppInfo{}}
 	for rows.Next() {
 		var a AppInfo
 		var created int64

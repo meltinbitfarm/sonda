@@ -25,6 +25,7 @@ type FunnelStep struct {
 // FunnelInput is the input of funnel.
 type FunnelInput struct {
 	App         string       `json:"app" jsonschema:"app name or numeric id (see list_apps)"`
+	Environment string       `json:"environment,omitempty" jsonschema:"production (default: real App Store users only, test builds excluded), testflight (TestFlight/sandbox builds), development (Debug, simulator, Xcode installs) or all"`
 	From        string       `json:"from,omitempty" jsonschema:"start, inclusive: YYYY-MM-DD (UTC) or RFC 3339; default 30 days before 'to'. The first step must happen in [from, to)"`
 	To          string       `json:"to,omitempty" jsonschema:"end: YYYY-MM-DD (that whole UTC day included) or RFC 3339 (exclusive); default now"`
 	Steps       []FunnelStep `json:"steps" jsonschema:"2 to 10 ordered steps"`
@@ -45,6 +46,7 @@ type FunnelStepResult struct {
 // FunnelResult is the output of funnel.
 type FunnelResult struct {
 	App         AppRef             `json:"app"`
+	Environment string             `json:"environment"`
 	Period      Period             `json:"period"`
 	By          string             `json:"by"`
 	WindowHours int                `json:"window_hours"`
@@ -63,7 +65,7 @@ type funnelEvent struct {
 // and the deepest progress counts, so a later attempt can convert. Later
 // steps may fall after 'to' as long as they are inside the window.
 func (s *Service) Funnel(ctx context.Context, in FunnelInput) (FunnelResult, error) {
-	sc, err := s.resolveScope(ctx, in.App, in.From, in.To)
+	sc, err := s.resolveScope(ctx, in.App, in.From, in.To, in.Environment)
 	if err != nil {
 		return FunnelResult{}, err
 	}
@@ -114,13 +116,16 @@ func (s *Service) Funnel(ctx context.Context, in FunnelInput) (FunnelResult, err
 			nameArgs = append(nameArgs, st.Name)
 		}
 	}
+	envSQL, envArgs := envCond("environment", sc.envs)
 	q := fmt.Sprintf(`SELECT ent, ts, mask FROM (
 		SELECT %s AS ent, ts, id, %s AS mask FROM events
-		WHERE app_id = ? AND ts >= ? AND ts < ? AND name IN (%s)
+		WHERE app_id = ? AND %s AND ts >= ? AND ts < ? AND name IN (%s)
 	) WHERE mask <> 0 ORDER BY ent, ts, id LIMIT ?`,
-		entity, strings.Join(cases, " | "), strings.Join(names, ", "))
+		entity, strings.Join(cases, " | "), envSQL, strings.Join(names, ", "))
 	args := append([]any{}, caseArgs...)
-	args = append(args, sc.app.ID, sc.from, sc.to+window)
+	args = append(args, sc.app.ID)
+	args = append(args, envArgs...)
+	args = append(args, sc.from, sc.to+window)
 	args = append(args, nameArgs...)
 	args = append(args, maxFunnelRows+1)
 
@@ -162,7 +167,7 @@ func (s *Service) Funnel(ctx context.Context, in FunnelInput) (FunnelResult, err
 	}
 	flush()
 
-	res := FunnelResult{App: sc.app, Period: sc.period(), By: in.By, WindowHours: in.WindowHours}
+	res := FunnelResult{App: sc.app, Environment: sc.env, Period: sc.period(), By: in.By, WindowHours: in.WindowHours}
 	for k, st := range in.Steps {
 		r := FunnelStepResult{Step: k + 1, Name: st.Name, Props: st.Props, Count: reached[k],
 			ConversionFromStart: ratio(reached[k], reached[0])}

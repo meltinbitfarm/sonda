@@ -18,6 +18,7 @@ var DefaultRetentionDays = []int{1, 7, 30}
 // RetentionInput is the input of retention.
 type RetentionInput struct {
 	App         string `json:"app" jsonschema:"app name or numeric id (see list_apps)"`
+	Environment string `json:"environment,omitempty" jsonschema:"production (default: real App Store users only, test builds excluded), testflight (TestFlight/sandbox builds), development (Debug, simulator, Xcode installs) or all"`
 	From        string `json:"from,omitempty" jsonschema:"cohort range start: users whose first app.first_launch is in [from, to). YYYY-MM-DD (UTC) or RFC 3339; default 30 days before 'to'. Day-30 retention needs cohorts older than 31 days, so widen it (e.g. 90 days back)"`
 	To          string `json:"to,omitempty" jsonschema:"cohort range end: YYYY-MM-DD (that whole UTC day included) or RFC 3339 (exclusive); default now"`
 	Days        []int  `json:"days,omitempty" jsonschema:"return days to measure, default [1, 7, 30]; up to 5 values between 1 and 365"`
@@ -42,6 +43,7 @@ type RetentionCohort struct {
 // RetentionResult is the output of retention.
 type RetentionResult struct {
 	App         AppRef            `json:"app"`
+	Environment string            `json:"environment"`
 	Period      Period            `json:"period"`
 	ReturnEvent string            `json:"return_event,omitempty"`
 	Cohorts     []RetentionCohort `json:"cohorts"`
@@ -53,7 +55,7 @@ type RetentionResult struct {
 // 24 hours starting N*24h after that first launch. Only users whose day-N
 // window has fully elapsed are eligible; rate = returned / eligible.
 func (s *Service) Retention(ctx context.Context, in RetentionInput) (RetentionResult, error) {
-	sc, err := s.resolveScope(ctx, in.App, in.From, in.To)
+	sc, err := s.resolveScope(ctx, in.App, in.From, in.To, in.Environment)
 	if err != nil {
 		return RetentionResult{}, err
 	}
@@ -78,6 +80,9 @@ func (s *Service) Retention(ctx context.Context, in RetentionInput) (RetentionRe
 		return RetentionResult{}, fmt.Errorf("invalid return_event %q", in.ReturnEvent)
 	}
 	now := s.now().UnixMilli()
+	// Cohorts and returns both come from the chosen environments only.
+	envSQL, envArgs := envCond("environment", sc.envs)
+	eEnvSQL, _ := envCond("e.environment", sc.envs)
 
 	var sel []string
 	var selArgs []any
@@ -86,8 +91,9 @@ func (s *Service) Retention(ctx context.Context, in RetentionInput) (RetentionRe
 		// Eligible: the day-N window ended before now.
 		sel = append(sel, "sum(c.t0 + ? <= ?)")
 		selArgs = append(selArgs, end, now)
-		ret := "sum(c.t0 + ? <= ? AND EXISTS (SELECT 1 FROM events e WHERE e.app_id = ? AND e.user_id = c.user_id AND e.ts >= c.t0 + ? AND e.ts < c.t0 + ?"
-		retArgs := []any{end, now, sc.app.ID, start, end}
+		ret := "sum(c.t0 + ? <= ? AND EXISTS (SELECT 1 FROM events e WHERE e.app_id = ? AND " + eEnvSQL +
+			" AND e.user_id = c.user_id AND e.ts >= c.t0 + ? AND e.ts < c.t0 + ?"
+		retArgs := append(append([]any{end, now, sc.app.ID}, envArgs...), start, end)
 		if in.ReturnEvent != "" {
 			ret += " AND e.name = ?"
 			retArgs = append(retArgs, in.ReturnEvent)
@@ -96,18 +102,20 @@ func (s *Service) Retention(ctx context.Context, in RetentionInput) (RetentionRe
 		selArgs = append(selArgs, retArgs...)
 	}
 	q := fmt.Sprintf(`WITH f AS (
-		SELECT user_id, min(ts) AS t0 FROM events WHERE app_id = ? AND name = ? GROUP BY user_id
+		SELECT user_id, min(ts) AS t0 FROM events WHERE app_id = ? AND %s AND name = ? GROUP BY user_id
 	), c AS (SELECT user_id, t0 FROM f WHERE t0 >= ? AND t0 < ?)
 	SELECT date(c.t0 / 1000, 'unixepoch', 'weekday 0', '-6 days') AS week, count(*), %s
-	FROM c GROUP BY week ORDER BY week`, strings.Join(sel, ", "))
-	args := append([]any{sc.app.ID, FirstLaunchEvent, sc.from, sc.to}, selArgs...)
+	FROM c GROUP BY week ORDER BY week`, envSQL, strings.Join(sel, ", "))
+	args := append([]any{sc.app.ID}, envArgs...)
+	args = append(args, FirstLaunchEvent, sc.from, sc.to)
+	args = append(args, selArgs...)
 
 	rows, err := s.DB.QueryContext(ctx, q, args...)
 	if err != nil {
 		return RetentionResult{}, err
 	}
 	defer rows.Close()
-	res := RetentionResult{App: sc.app, Period: sc.period(), ReturnEvent: in.ReturnEvent, Cohorts: []RetentionCohort{}}
+	res := RetentionResult{App: sc.app, Environment: sc.env, Period: sc.period(), ReturnEvent: in.ReturnEvent, Cohorts: []RetentionCohort{}}
 	res.Overall = RetentionCohort{WeekStart: "all", Days: make([]RetentionDay, len(days))}
 	for i, d := range days {
 		res.Overall.Days[i].Day = d

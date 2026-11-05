@@ -144,6 +144,9 @@ func setupWith(t *testing.T, opts Options) (*httptest.Server, *lockedBuf) {
 		ev("000000000004", "app.session_started", 23*time.Hour, u1, ""),
 		ev("000000000005", "app.first_launch", 10*time.Hour, u2, ""),
 		ev("000000000006", "paywall.shown", 9*time.Hour, u2, `{"placement":"onboarding"}`),
+		// A Debug build of Fabio's (D23): hidden unless asked for.
+		{EventID: "00000000-0000-4000-8000-000000000007", Name: "screen.viewed", TS: now.Add(-time.Hour).UnixMilli(),
+			UserID: u2, SessionID: u2, Environment: "development", Props: `{"screen":"debug"}`},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -227,9 +230,21 @@ func TestMCPEndToEnd(t *testing.T) {
 		if needsApp != strings.Contains(string(schema), `"required":["app"`) {
 			t.Errorf("%s: input schema %s", tl.Name, schema)
 		}
+		// D23: every tool but query filters environments, production by default,
+		// and says so; query exposes the column and says it does not filter.
+		filters := tl.Name != "query"
+		if filters != strings.Contains(string(schema), `"environment":`) {
+			t.Errorf("%s: environment parameter present = %v", tl.Name, !filters)
+		}
+		if !strings.Contains(tl.Description, "environment") || !strings.Contains(tl.Description, "production") ||
+			(filters && !strings.Contains(tl.Description, "default")) {
+			t.Errorf("%s: description does not explain environments", tl.Name)
+		}
 	}
 	if init := cs.InitializeResult(); init == nil || !strings.Contains(init.Instructions, "untrusted data") {
 		t.Error("instructions lack the prompt-injection warning")
+	} else if !strings.Contains(init.Instructions, "production (the default)") {
+		t.Error("instructions do not explain the environment default")
 	}
 	slices.Sort(names)
 	if strings.Join(names, ",") != "event_counts,funnel,list_apps,query,recent_events,retention" {
@@ -242,8 +257,20 @@ func TestMCPEndToEnd(t *testing.T) {
 	}
 
 	out, _ = call(t, cs, "event_counts", map[string]any{"app": "demo", "group_by": []string{"name"}})
-	if total := out["total"].(map[string]any); total["events"] != 6.0 || total["users"] != 2.0 {
+	if total := out["total"].(map[string]any); total["events"] != 6.0 || total["users"] != 2.0 || out["environment"] != "production" {
 		t.Errorf("event_counts = %v", out)
+	}
+	out, _ = call(t, cs, "list_apps", map[string]any{"environment": "all"})
+	if apps := out["apps"].([]any); apps[0].(map[string]any)["events"] != 7.0 {
+		t.Errorf("list_apps all = %v", out)
+	}
+	out, _ = call(t, cs, "event_counts", map[string]any{"app": "Demo", "environment": "all", "group_by": []string{"environment"}})
+	if rows := out["rows"].([]any); len(rows) != 2 || rows[1].(map[string]any)["group"].(map[string]any)["environment"] != "development" {
+		t.Errorf("event_counts by environment = %v", out)
+	}
+	out, _ = call(t, cs, "recent_events", map[string]any{"app": "Demo", "environment": "development"})
+	if evs := out["events"].([]any); len(evs) != 1 || evs[0].(map[string]any)["environment"] != "development" {
+		t.Errorf("recent_events development = %v", out)
 	}
 
 	out, _ = call(t, cs, "funnel", map[string]any{"app": "Demo", "steps": []map[string]any{
@@ -288,6 +315,7 @@ func TestMCPEndToEnd(t *testing.T) {
 		{"query", map[string]any{"sql": "WITH x AS (SELECT 1) DELETE FROM events"}, "DELETE is not allowed"},
 		{"query", map[string]any{"sql": "SELECT ingest_key_hash FROM apps WHERE ingest_key_hash IS NOT NULL"}, ""},
 		{"event_counts", map[string]any{"app": "Demo", "unknown": 1}, "unknown"},
+		{"retention", map[string]any{"app": "Demo", "environment": "debug"}, "environment must be production (default), testflight, development or all"},
 	} {
 		out, res := call(t, cs, c.tool, c.args)
 		if c.want == "" { // not an error, but the hash is hidden
