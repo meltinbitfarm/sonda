@@ -23,4 +23,4 @@
 - none
 
 ## Backlog
-- O9: a Fabio — (push, tag 0.1.0 e deploy su sonda.meltinbitfarm.cloud fatti) ripristino vero da R2, collegare Claude, integrare l'SDK nella quarta app (docs/deploy.md, sdk/README.md)
+- O9: a Fabio — (push, tag 0.1.0, deploy su sonda.meltinbitfarm.cloud, Claude Code collegato: fatti) ripristino vero da R2, integrare l'SDK nella quarta app (docs/deploy.md, sdk/README.md)
