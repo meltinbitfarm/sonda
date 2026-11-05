@@ -1,6 +1,7 @@
 # Archive
 
 ## Closed
+- O10: campo environment (D23) in SDK, server e MCP, versione 0.2.0 — done 2026-11-05: migrazione 0002, MCP con default production, test verdi, unito a main
 - Q1: Coolify gestisce depends_on con service_completed_successfully? — done 2026-11-05: sì, primo deploy reale ok (restore → app); attenzione al dominio, Coolify lo aveva messo su restore
 - Q3: dominio o sottodominio del servizio — done 2026-11-05: sonda.meltinbitfarm.cloud (D22)
 - O1: passo 1 — scheletro Go, CLI `serve`/`app create`, SQLite WAL con tabelle apps/events (D19) — done 2026-11-04: unito a main da release/first, test verdi
