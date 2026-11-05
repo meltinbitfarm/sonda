@@ -1,7 +1,6 @@
 # Open
 
 ## Open questions
-- Q1: Coolify gestisce depends_on con service_completed_successfully? Risposta (non provata dal vivo): sì, Coolify usa docker compose; `restore` con `restart: "no"` ed `exclude_from_hc: true`. Manca un deploy di prova. Ripiego: un container con Litestream ≥0.5.6 `replicate -restore-if-db-not-exists -exec "sonda serve"`. Dettagli: notes/q1-coolify-depends-on.md
 - Q2: quale schema di autenticazione usano esattamente gli MCP di Pulso e Celora? Risposta: streamable HTTP senza OAuth, token come `Authorization: Bearer` o `?token=`; Celora usa un solo segreto da env con confronto a tempo costante. Dettagli: notes/q2-mcp-auth.md
 - Q4: valori del rate limit sulla ingest key. Valori di partenza in A2 e A8.
 - Q5: politica di conservazione degli eventi grezzi nel tempo.
@@ -24,4 +23,4 @@
 - none
 
 ## Backlog
-- O9: a Fabio — (push e tag 0.1.0 fatti il 2026-11-04) deploy su Coolify (chiude Q1), ripristino vero da R2, collegare Claude, integrare l'SDK nella quarta app (docs/deploy.md, sdk/README.md)
+- O9: a Fabio — (push, tag 0.1.0 e deploy su sonda.meltinbitfarm.cloud fatti) ripristino vero da R2, collegare Claude, integrare l'SDK nella quarta app (docs/deploy.md, sdk/README.md)
