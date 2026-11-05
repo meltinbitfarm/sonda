@@ -1,6 +1,7 @@
 # Archive
 
 ## Closed
+- O11: SDK: purchase.pending e dettaglio errori di acquisto (D24), versione 0.3.0 — done 2026-11-05: Sonda.PurchaseFailure col formato di TeSeFredda, test verdi, unito a main
 - O10: campo environment (D23) in SDK, server e MCP, versione 0.2.0 — done 2026-11-05: migrazione 0002, MCP con default production, test verdi, unito a main
 - Q1: Coolify gestisce depends_on con service_completed_successfully? — done 2026-11-05: sì, primo deploy reale ok (restore → app); attenzione al dominio, Coolify lo aveva messo su restore
 - Q3: dominio o sottodominio del servizio — done 2026-11-05: sonda.meltinbitfarm.cloud (D22)
