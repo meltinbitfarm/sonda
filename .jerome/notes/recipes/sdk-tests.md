@@ -1,17 +1,17 @@
 # Swift SDK tests
 
-Verified 2026-11-04 on macOS (arm64), again 2026-11-05 (O10), Xcode 27.2, Swift 6.4.2. Run from the repo root (Package.swift is there, D17).
+Verified 2026-11-04 on macOS (arm64), again 2026-11-05 (O10, O11), Xcode 27.2, Swift 6.4.2. Run from the repo root (Package.swift is there, D17).
 Tests use Swift Testing and a URLProtocol mock (no network); each test has its own temp queue file,
 UserDefaults suite, mock host and clock, so they run in parallel.
 
-    # macOS, the quick loop (47 tests, ~1 s after the first build)
+    # macOS, the quick loop (53 tests, ~1 s after the first build)
     swift test
 
     # one suite or test
     swift test --filter DeliveryTests
     swift test --filter "SessionTests/sessionRollsOverAfter30MinutesOfInactivity"
 
-    # iOS simulator (46 tests: the macOS-only gunzip test is excluded)
+    # iOS simulator (52 tests: the macOS-only gunzip test is excluded)
     xcodebuild test -scheme Sonda -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
       -derivedDataPath .build/xcode
     # summary only:  ... 2>&1 | grep -E "Test run with|TEST SUCCEEDED|TEST FAILED"

@@ -66,9 +66,12 @@ Commands: notes/recipes/sdk-tests.md. Integration guide: sdk/README.md.
     as 6 bytes, control characters in string values counted at 6 bytes too). Optional fields cleaned of control characters and cut at 64 bytes. Invalid events are
     dropped and logged (os.Logger, subsystem `dev.sonda.sdk`).
 14. **Catalog extras:** `purchaseResult(_:productID:)` maps StoreKit 2 results (success verified ->
-    completed, userCancelled -> cancelled, pending -> failed{error:"pending"}, unverified ->
-    failed{error:"unverified"}); `purchaseFailed` and `errorOccurred` accept an `Error` and send only
-    NSError domain/code. `purchase.failed` also carries `product_id` when known (extra prop beyond D12).
+    completed, userCancelled -> cancelled, pending -> `purchase.pending` (D24), unverified ->
+    failed{error:"unverified", verification_error}, unknown result -> failed{error:"unknownResult"}).
+    `purchaseFailed(_ error:)` sends the D24 detail via `Sonda.PurchaseFailure` (exact StoreKit case in
+    `error`, error_domain/code, underlying_error_domain/code; a thrown userCancelled -> purchase.cancelled);
+    `errorOccurred` sends only NSError domain/code. `purchase.failed` also carries `product_id` when
+    known (extra prop beyond D12). Details: notes/o11-purchase-details.md.
 15. Second `configure` call is ignored; `track` before `configure` is dropped with a log line.
     `configure` builds the live dependencies (queue directory, sysctl, URLSession) inside the detached
     utility task: the caller only takes a lock and creates a stream and a task (step 2, S5).

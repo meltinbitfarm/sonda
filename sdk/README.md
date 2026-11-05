@@ -82,7 +82,7 @@ Notes:
 - SDK 0.1.0 dropped test builds instead and sends no `environment`; the server stores its events as
   `production`, which is what they are.
 
-## Standard events (D12)
+## Standard events (D12, D24)
 
 Prefer these helpers: the same names and props in every app make the same funnels work everywhere.
 
@@ -101,9 +101,9 @@ Sonda.paywallShown(placement: "onboarding", variant: "b")
 Sonda.purchaseStarted(productID: product.id)
 do {
     let result = try await product.purchase()
-    Sonda.purchaseResult(result, productID: product.id)   // completed / cancelled / failed
+    Sonda.purchaseResult(result, productID: product.id)   // completed / cancelled / pending / failed
 } catch {
-    Sonda.purchaseFailed(error, productID: product.id)      // error = "domain:code"
+    Sonda.purchaseFailed(error, productID: product.id)      // exact StoreKit case + domain/code
 }
 Sonda.purchaseRestored()
 
@@ -121,9 +121,50 @@ Sonda.errorOccurred(domain: "sync", code: 3)
 | `featureUsed(_:)` | `feature.used` | `feature` |
 | `paywallShown(placement:variant:)` | `paywall.shown` | `placement`, `variant` |
 | `purchaseStarted/Completed/Cancelled(productID:)` | `purchase.started/completed/cancelled` | `product_id` |
+| `purchasePending(productID:)` | `purchase.pending` | `product_id` |
+| `purchaseFailed(_:productID:)` | `purchase.failed` | `error`, `product_id`, `error_domain`, `error_code`, `underlying_error_domain`, `underlying_error_code`, `verification_error` |
 | `purchaseFailed(error:productID:)` | `purchase.failed` | `error`, `product_id` |
 | `purchaseRestored()` | `purchase.restored` | |
 | `errorOccurred(domain:code:)` | `error.occurred` | `domain`, `code` |
+
+### Purchases in detail
+
+`purchaseResult(_:productID:)` maps a StoreKit 2 result:
+
+| result | event | props |
+|---|---|---|
+| `.success(.verified)` | `purchase.completed` | `product_id` |
+| `.success(.unverified)` | `purchase.failed` | `error: "unverified"`, `verification_error` (e.g. `invalidSignature`), `product_id` |
+| `.userCancelled` | `purchase.cancelled` | `product_id` |
+| `.pending` (Ask to Buy, a payment waiting for approval) | `purchase.pending` | `product_id` |
+| a result added by a future StoreKit | `purchase.failed` | `error: "unknownResult"`, `product_id` |
+
+A pending purchase is not a failure: it may still complete later, and then `Transaction.updates`
+delivers it (send `purchaseCompleted` from there if you want to count it).
+
+`purchaseFailed(_ error:productID:)` turns a thrown error into flat props, never the error message:
+
+- `error`: the exact case, as a short code. The `StoreKitError` case name (`networkError`,
+  `systemError`, `notEntitled`, `notAvailableInStorefront`, `unsupported`, `unknown`, ...) or the
+  `Product.PurchaseError` case name (`purchaseNotAllowed`, `ineligibleForOffer`,
+  `invalidOfferSignature`, ...); `other` for any other error; `storeKitOther` / `purchaseErrorOther`
+  for a case added by a newer StoreKit.
+- `error_domain`, `error_code`: the NSError domain and code of the error.
+- `underlying_error_domain`, `underlying_error_code`: the cause, when there is one: the error carried
+  by `networkError` and `systemError`, otherwise `NSUnderlyingErrorKey`. This is what tells an
+  `unknown` apart (e.g. `NSURLErrorDomain` `-1009` = offline).
+
+A thrown `StoreKitError.userCancelled` sends `purchase.cancelled`, not `purchase.failed`, so a plain
+`catch { Sonda.purchaseFailed(error, productID: product.id) }` is always right.
+
+Need your own props on the same event (where the paywall was opened, for example)? Build the detail
+with `Sonda.PurchaseFailure` and merge it:
+
+```swift
+let failure = Sonda.PurchaseFailure(error)          // or PurchaseFailure(verificationError:)
+Sonda.track(Sonda.Event.purchaseFailed,
+            props: failure.props.merging(["product_id": .string(product.id), "placement": "onboarding"]) { a, _ in a })
+```
 
 ## Custom events
 
