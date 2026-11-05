@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Sonda
 
-/// The request matches .jerome/notes/ingest-contract.md (version 1).
+/// The request matches .jerome/notes/ingest-contract.md (version 2).
 @Suite struct ContractTests {
     let uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
@@ -32,7 +32,7 @@ import Testing
         let expectedTs = Int64(h.clock.now.timeIntervalSince1970 * 1000)
         let allowed: Set<String> = ["event_id", "name", "ts", "user_id", "session_id", "app_version", "build",
                                     "os_version", "locale", "region", "storefront", "device_model",
-                                    "device_type", "props"]
+                                    "device_type", "environment", "props"]
         for e in events {
             #expect(Set(e.keys).isSubset(of: allowed), "unexpected keys \(e.keys)")
             #expect((e["event_id"] as? String)?.wholeMatch(of: uuidPattern) != nil)
@@ -47,6 +47,7 @@ import Testing
             #expect(e["storefront"] as? String == "ITA")
             #expect(e["device_model"] as? String == "iPhone16,2")
             #expect(e["device_type"] as? String == "phone")
+            #expect(e["environment"] as? String == "production")
         }
         // ts is an integer in the raw JSON, never 1.793e12 or a string.
         let raw = String(decoding: r.json, as: UTF8.self)

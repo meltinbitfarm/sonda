@@ -1,7 +1,9 @@
 import Foundation
 
-/// One event on the wire, exactly as in .jerome/notes/ingest-contract.md (version 1).
-/// Optional fields that are nil are omitted from the JSON.
+/// One event on the wire, exactly as in .jerome/notes/ingest-contract.md (version 2).
+/// Optional fields that are nil are omitted from the JSON. `environment` is always set by this
+/// SDK; it is optional here only so queue lines written by SDK 0.1.0 (production only, no
+/// field, which the server stores as production) still load and send.
 struct WireEvent: Codable, Sendable, Equatable {
     var eventID: String
     var name: String
@@ -17,6 +19,7 @@ struct WireEvent: Codable, Sendable, Equatable {
     var storefront: String?
     var deviceModel: String?
     var deviceType: String?
+    var environment: AppEnvironment?
     var props: [String: SondaValue]?
 
     enum CodingKeys: String, CodingKey {
@@ -33,6 +36,7 @@ struct WireEvent: Codable, Sendable, Equatable {
         case storefront
         case deviceModel = "device_model"
         case deviceType = "device_type"
+        case environment
         case props
     }
 }

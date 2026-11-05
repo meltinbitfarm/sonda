@@ -1,7 +1,7 @@
 import Foundation
 
 /// Everything the engine needs from the outside world. `live` is what apps get; tests
-/// replace the clock, the network (URLProtocol mock), storage and the production check.
+/// replace the clock, the network (URLProtocol mock), storage and the environment check.
 struct Dependencies: Sendable {
     var ingestKey: String
     var endpoint: URL
@@ -11,7 +11,7 @@ struct Dependencies: Sendable {
     var now: @Sendable () -> Date
     /// Uniform in 0..<1, for backoff jitter.
     var random: @Sendable () -> Double
-    /// Decides whether events are kept at all (D8). Injectable so tests can run.
+    /// The `environment` stamped on every event (D23). Injectable so tests can pick one.
     var environment: @Sendable () async -> AppEnvironment
     var storefront: @Sendable () async -> String?
     var device: DeviceInfo
@@ -110,7 +110,8 @@ actor Engine {
         self.store = EventStore(fileURL: deps.queueURL, maxEvents: deps.maxQueuedEvents)
     }
 
-    var sendsEvents: Bool { environment?.sendsEvents ?? false }
+    /// True once `start` has decided the environment and loaded the identity.
+    var isStarted: Bool { environment != nil }
     var queuedEvents: [QueuedEvent] { store.events }
 
     // MARK: - Lifecycle
@@ -123,15 +124,11 @@ actor Engine {
         async let sf = deps.storefront()
         let environment = await env
         let fetchedStorefront = await sf
-        self.environment = environment
         if let fetchedStorefront, !fetchedStorefront.isEmpty {
             storefront = fetchedStorefront
             deps.defaults.set(fetchedStorefront, forKey: Keys.storefront)
         }
-        guard environment.sendsEvents else {
-            Log.sdk.info("Sonda: \(environment.rawValue, privacy: .public) build, events are dropped")
-            return
-        }
+        Log.sdk.info("Sonda: environment \(environment.rawValue, privacy: .public)")
 
         let now = deps.now()
         var firstLaunch = false
@@ -150,6 +147,9 @@ actor Engine {
             // first_launch always opens a fresh session.
             sessionID = nil
         }
+        // Set before the first enqueue: every event is stamped with it. Commands are handled only
+        // after `start` returns, so no event can be recorded without it.
+        self.environment = environment
         touchSession(at: now)
         if firstLaunch {
             enqueue(name: "app.first_launch", props: [:], at: now, eventID: UUID())
@@ -164,11 +164,11 @@ actor Engine {
         case let .track(name, props, date, id):
             record(name: name, props: props, at: date, eventID: id)
         case let .foreground(date):
-            guard sendsEvents else { return }
+            guard isStarted else { return }
             touchSession(at: date)
             triggerFlush()
         case let .background(date, done):
-            guard sendsEvents else { return done() }
+            guard isStarted else { return done() }
             touchSession(at: date)
             Task {
                 await self.flush()
@@ -186,7 +186,7 @@ actor Engine {
 
     /// Validates and queues one event. Invalid events are dropped here, never sent.
     func record(name: String, props: [String: SondaValue], at date: Date, eventID: UUID) {
-        guard sendsEvents else { return }
+        guard isStarted else { return }
         guard EventRules.isValidName(name) else {
             Log.sdk.error("Sonda: dropped event with invalid name \(name, privacy: .public)")
             return
@@ -218,7 +218,7 @@ actor Engine {
     }
 
     private func enqueue(name: String, props: [String: SondaValue], at date: Date, eventID: UUID) {
-        guard let userID, let sessionID else { return }
+        guard let userID, let sessionID, let environment else { return }
         let locale = deps.locale()
         let event = WireEvent(
             eventID: eventID.uuidString.lowercased(),
@@ -234,6 +234,7 @@ actor Engine {
             storefront: EventRules.field(storefront),
             deviceModel: EventRules.field(deps.device.deviceModel),
             deviceType: EventRules.field(deps.device.deviceType),
+            environment: environment,
             props: props.isEmpty ? nil : props
         )
         guard let json = try? JSONCoding.encoder.encode(event) else { return }
@@ -263,7 +264,7 @@ actor Engine {
             await running.value
             return
         }
-        guard sendsEvents, !unauthorized else { return }
+        guard isStarted, !unauthorized else { return }
         if let next = nextAttemptAt, deps.now() < next { return }
         // Created on the actor and stored before it can run: the task body starts only after
         // this method suspends, so `runningFlush` is always set while the send is in progress.

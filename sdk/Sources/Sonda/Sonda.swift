@@ -9,9 +9,10 @@ import os
 /// Sonda.track("feature.used", props: ["feature": "export"])
 /// ```
 ///
-/// Calls never block and never throw. Events are dropped in DEBUG builds, in the simulator,
-/// in Xcode installs and in TestFlight (D8); App Store builds send, and so do Release builds
-/// distributed outside the App Store (Ad Hoc, Enterprise, Developer ID).
+/// Calls never block and never throw. Every build sends, and every event says where it comes
+/// from (D23): `development` (DEBUG builds, simulator, Xcode installs), `testflight`, or
+/// `production` (App Store, and Release builds distributed outside it: Ad Hoc, Enterprise,
+/// Developer ID). The server's tools count only production unless asked otherwise.
 public enum Sonda {
     private static let channel = OSAllocatedUnfairLock<AsyncStream<Command>.Continuation?>(initialState: nil)
 
