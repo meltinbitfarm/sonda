@@ -77,7 +77,8 @@ func TestOpenReadOnly(t *testing.T) {
 	var count, ver int
 	st.DB.QueryRowContext(ctx, "SELECT count(*) FROM apps WHERE name = 'Demo'").Scan(&count)
 	st.DB.QueryRowContext(ctx, "PRAGMA user_version").Scan(&ver)
-	if count != 1 || ver != 1 {
+	ms, _ := loadMigrations()
+	if count != 1 || ver != len(ms) {
 		t.Fatalf("after attempts: apps=%d user_version=%d", count, ver)
 	}
 

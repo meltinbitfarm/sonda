@@ -30,6 +30,7 @@ func event(over map[string]any) json.RawMessage {
 		"storefront":   "ITA",
 		"device_model": "iPhone16,2",
 		"device_type":  "phone",
+		"environment":  "testflight",
 		"props":        map[string]any{"screen": "home"},
 	}
 	for k, v := range over {
@@ -48,8 +49,21 @@ func TestValidateOK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ev.EventID != "3f2504e0-4f89-11d3-9a0c-0305e82c3301" || ev.UserID != strings.ToLower(uid) || ev.SessionID != sid || ev.Props != `{"screen":"home"}` || ev.DeviceModel != "iPhone16,2" {
+	if ev.EventID != "3f2504e0-4f89-11d3-9a0c-0305e82c3301" || ev.UserID != strings.ToLower(uid) || ev.SessionID != sid || ev.Props != `{"screen":"home"}` || ev.DeviceModel != "iPhone16,2" || ev.Environment != "testflight" {
 		t.Fatalf("event = %+v", ev)
+	}
+
+	// environment: every accepted value is kept; missing, null or "" is production
+	// (SDK 0.1.0 sends no environment and only ever sent production builds).
+	for _, env := range []string{"production", "testflight", "development"} {
+		if ev, err := Validate(event(map[string]any{"environment": env}), now); err != nil || ev.Environment != env {
+			t.Errorf("environment %q: %+v, %v", env, ev.Environment, err)
+		}
+	}
+	for _, env := range []any{nil, json.RawMessage("null"), ""} { // nil deletes the field
+		if ev, err := Validate(event(map[string]any{"environment": env}), now); err != nil || ev.Environment != "production" {
+			t.Errorf("environment %v: %q, %v", env, ev.Environment, err)
+		}
 	}
 
 	// Only required fields; props absent or null become {}.
@@ -110,6 +124,9 @@ func TestValidateRejects(t *testing.T) {
 		{"control char", event(map[string]any{"locale": "it\nIT"}), "locale: contains control"},
 		{"device type", event(map[string]any{"device_type": "watch"}), "device_type"},
 		{"field wrong type", event(map[string]any{"region": 39}), "region: wrong type"},
+		{"environment unknown", event(map[string]any{"environment": "staging"}), "environment: must be"},
+		{"environment case", event(map[string]any{"environment": "Production"}), "environment: must be"},
+		{"environment wrong type", event(map[string]any{"environment": true}), "environment: wrong type"},
 		{"props array", event(map[string]any{"props": []any{1}}), "props: must be a JSON object"},
 		{"props string", event(map[string]any{"props": "x"}), "props: must be a JSON object"},
 		{"props nested object", event(map[string]any{"props": map[string]any{"a": map[string]any{"b": 1}}}), "nested"},

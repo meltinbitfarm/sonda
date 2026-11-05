@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -50,7 +51,8 @@ func TestMigrations(t *testing.T) {
 	}
 
 	// Expected indexes exist.
-	for _, idx := range []string{"events_app_name_ts", "events_app_user_ts", "events_app_session_ts", "events_app_event_id"} {
+	for _, idx := range []string{"events_app_env_name_ts", "events_app_env_user_ts", "events_app_env_session_ts",
+		"events_app_env_ts", "events_app_event_id"} {
 		var n int
 		s.DB.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?", idx).Scan(&n)
 		if n != 1 {
@@ -88,6 +90,65 @@ func TestMigrations(t *testing.T) {
 	}
 }
 
+// Migration 0002 on a database that has only 0001 and real rows, as in
+// production: the rows survive, become production, and the indexes move.
+func TestMigrationFromV1(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "v1.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1, err := migrationsFS.ReadFile("migrations/0001_init.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{string(v1), "PRAGMA user_version = 1",
+		"INSERT INTO apps (name, ingest_key_hash, created_at) VALUES ('a', 'h', 1)",
+		"INSERT INTO events (app_id, event_id, name, ts, received_at, user_id, session_id) VALUES (1, 'e1', 'app.first_launch', 1, 2, 'u', 's')",
+		"INSERT INTO events (app_id, event_id, name, ts, received_at, user_id, session_id) VALUES (1, 'e2', 'screen.viewed', 3, 4, 'u', 's')",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%.40s: %v", q, err)
+		}
+	}
+	db.Close()
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	defer s.Close()
+	if v, _ := s.SchemaVersion(ctx); v != 2 {
+		t.Fatalf("schema version = %d", v)
+	}
+	var n, prod int
+	s.DB.QueryRowContext(ctx, "SELECT count(*), sum(environment = 'production') FROM events").Scan(&n, &prod)
+	if n != 2 || prod != 2 {
+		t.Fatalf("after migration: %d events, %d production", n, prod)
+	}
+	var old int
+	s.DB.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='index' AND name IN ('events_app_name_ts', 'events_app_user_ts', 'events_app_session_ts')").Scan(&old)
+	if old != 0 {
+		t.Errorf("%d old indexes left", old)
+	}
+	// The queries filtered by environment use the new indexes.
+	var plan, detail string
+	var id, parent, unused int
+	rows, err := s.DB.QueryContext(ctx, "EXPLAIN QUERY PLAN SELECT count(*) FROM events WHERE app_id = 1 AND environment IN ('production', 'testflight') AND name = 'x' AND ts >= 0 AND ts < 10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		rows.Scan(&id, &parent, &unused, &detail)
+		plan += detail + "; "
+	}
+	rows.Close()
+	if !strings.Contains(plan, "events_app_env_name_ts (app_id=? AND environment=? AND name=? AND ts>? AND ts<?)") {
+		t.Errorf("query plan = %s", plan)
+	}
+}
+
 func TestRefusesNewerSchema(t *testing.T) {
 	ctx := context.Background()
 	s, path := openTemp(t)
@@ -116,6 +177,9 @@ func TestEventsConstraints(t *testing.T) {
 	}
 	if _, err := s.DB.ExecContext(ctx, "INSERT INTO events (app_id, name, ts, received_at, user_id, session_id) VALUES (?, 'x', 1, 2, 'u', 's')", app.ID); err == nil {
 		t.Error("event without event_id accepted")
+	}
+	if _, err := s.DB.ExecContext(ctx, "INSERT INTO events (app_id, event_id, name, ts, received_at, user_id, session_id, environment) VALUES (?, 'e-env', 'x', 1, 2, 'u', 's', 'staging')", app.ID); err == nil {
+		t.Error("unknown environment accepted")
 	}
 	if _, err := s.DB.ExecContext(ctx, ins, app.ID+100, `{}`); err == nil {
 		t.Error("event for unknown app accepted (foreign keys off?)")
@@ -232,7 +296,7 @@ func TestInsertEvents(t *testing.T) {
 	recv := time.UnixMilli(1_800_000_000_000)
 	evs := []Event{
 		{EventID: "e1", Name: "app.first_launch", TS: 1, UserID: "u", SessionID: "s", DeviceType: "phone"},
-		{EventID: "e2", Name: "screen.viewed", TS: 2, UserID: "u", SessionID: "s", Props: `{"screen":"home"}`},
+		{EventID: "e2", Name: "screen.viewed", TS: 2, UserID: "u", SessionID: "s", Props: `{"screen":"home"}`, Environment: "testflight"},
 	}
 	if dup, err := s.InsertEvents(ctx, app.ID, recv, evs); err != nil || dup != 0 {
 		t.Fatal(dup, err)
@@ -248,6 +312,11 @@ func TestInsertEvents(t *testing.T) {
 	s.DB.QueryRowContext(ctx, "SELECT props, build, device_type, ts FROM events WHERE name = 'app.first_launch'").Scan(&props, &build, &dt, &got)
 	if props != "{}" || build.Valid || dt.String != "phone" || got != 1 {
 		t.Fatalf("row = %q %v %v %d", props, build, dt, got)
+	}
+	var envs string
+	s.DB.QueryRowContext(ctx, "SELECT group_concat(environment, ',') FROM (SELECT environment FROM events ORDER BY ts)").Scan(&envs)
+	if envs != "production,testflight" { // empty Environment = production
+		t.Fatalf("environments = %q", envs)
 	}
 
 	// One bad row rolls back the whole batch.

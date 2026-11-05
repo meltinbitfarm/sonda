@@ -41,6 +41,10 @@ var (
 // DeviceTypes are the accepted device_type values (D10).
 var DeviceTypes = map[string]bool{"phone": true, "pad": true, "mac": true}
 
+// Environments are the accepted environment values (D23). A missing, null or
+// empty environment is stored as store.DefaultEnvironment (production).
+var Environments = map[string]bool{"production": true, "testflight": true, "development": true}
+
 // Batch is the request body.
 type Batch struct {
 	Events []json.RawMessage `json:"events"`
@@ -63,6 +67,7 @@ type wireEvent struct {
 	Storefront  string          `json:"storefront"`
 	DeviceModel string          `json:"device_model"`
 	DeviceType  string          `json:"device_type"`
+	Environment string          `json:"environment"`
 	Props       json.RawMessage `json:"props"`
 }
 
@@ -130,6 +135,7 @@ func Validate(raw json.RawMessage, now time.Time) (store.Event, error) {
 		Storefront:  w.Storefront,
 		DeviceModel: w.DeviceModel,
 		DeviceType:  w.DeviceType,
+		Environment: w.Environment,
 	}
 	for _, f := range []struct{ name, val string }{
 		{"app_version", ev.AppVersion}, {"build", ev.Build}, {"os_version", ev.OSVersion},
@@ -142,6 +148,11 @@ func Validate(raw json.RawMessage, now time.Time) (store.Event, error) {
 	}
 	if ev.DeviceType != "" && !DeviceTypes[ev.DeviceType] {
 		return store.Event{}, errors.New("device_type: must be phone, pad or mac")
+	}
+	if ev.Environment == "" {
+		ev.Environment = store.DefaultEnvironment
+	} else if !Environments[ev.Environment] {
+		return store.Event{}, errors.New("environment: must be production, testflight or development")
 	}
 
 	ev.Props, err = validateProps(w.Props)
